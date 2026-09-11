@@ -1,0 +1,125 @@
+{
+  "app": {
+    "title": "Mindsnap - Dijital Farkındalık"
+  },
+  "titlebar": {
+    "hint": "Dijital Farkındalık Asistanı",
+    "minimize": "Küçült",
+    "maximize": "Ekranı Kapla",
+    "close": "Kapat"
+  },
+  "brand": {
+    "name": "Mindsnap",
+    "tagline": "Dijital Farkındalık"
+  },
+  "nav": {
+    "dashboard": "Genel Bakış",
+    "apps": "Uygulamalar",
+    "settings": "Ayarlar"
+  },
+  "tabs": {
+    "dashboard": {
+      "title": "Genel Bakış",
+      "subtitle": "Uygulama kullanım sürenizi burada görünür."
+    },
+    "apps": {
+      "title": "Takip Edilen Uygulamalar",
+      "subtitle": "Süre sınırına tabi tutulacak uygulamalar."
+    },
+    "settings": {
+      "title": "Ayarlar",
+      "subtitle": "Uygulama ayarları ve uygulama bilgisi."
+    }
+  },
+  "dashboard": {
+    "desktop": "Masaüstü",
+    "desktop_idle": "Masaüstü / Boşta",
+    "focus_mode": "Odaklanma Modu (Serbest)",
+    "tracked_mode": "Takip Edilen Uygulama",
+    "stat_active_app": "Aktif Uygulama",
+    "stat_threshold": "İlk Uyarı Eşiği",
+    "stat_alerts_session": "Oturum Uyarıları",
+    "minutes_unit": "{count} dakika",
+    "repeat_unit_hint": "Tekrar: {count} dk",
+    "stat_alerts_zero": "0 uyarı",
+    "stat_alerts_count": "{count} uyarı",
+    "stat_alerts_none": "Süre aşımı yok",
+    "stat_alerts_triggered": "Uyarı gönderildi"
+  },
+  "apps": {
+    "search_placeholder": "Uygulama arayın...",
+    "btn_browse": "Manuel Ekle",
+    "btn_browse_tooltip": "Bilgisayarınızdan manuel olarak bir uygulama dosyası seçin",
+    "running_windows": "Açık Uygulamalar",
+    "refresh_tooltip": "Uygulamaları Yenile",
+    "tracked_list": "Takip Listesi",
+    "btn_track": "+ Takip Et",
+    "badge_tracked": "✓ Takipte",
+    "btn_untrack_tooltip": "Takip listesinden çıkar",
+    "empty_running": "Açık uygulama bulunamadı.",
+    "empty_running_search": "Aramanızla eşleşen bir sonuç bulunamadı.",
+    "empty_tracked": "Henüz takip edilen bir uygulama yok. Bir tane eklemeye ne dersiniz?",
+    "empty_tracked_hint": "Açık pencereler panelinden ekleyebilir veya yukarıdaki <b>Manuel Ekle</b> butonuna tıklayabilirsiniz.",
+    "empty_tracked_search": "Aramanızla eşleşen bir sonuç bulunamadı."
+  },
+  "settings": {
+    "group_timing": "Hatırlatıcı / Bildirim Eşikleri",
+    "initial_alert_label": "İlk Hatırlatma Gecikmesi",
+    "initial_alert_desc": "İlk bildirim gönderilmeden önce takip edilen uygulamada geçirilen süre.",
+    "repeat_alert_label": "Hatırlatma Tekrar Aralığı",
+    "repeat_alert_desc": "İlk uyarıdan sonra uygulamayı kullanmaya devam ederseniz hatırlatıcıların tekrarlanma sıklığı.",
+    "min_unit": "{count} dk",
+    "group_system": "Bildirim ve Sistem Davranışı",
+    "sound_label": "Bildirim Sesi",
+    "sound_desc": "Bildirimler için ses çalınıp çalınmayacağını belirler.",
+    "minimize_label": "Kapatınca Tepsiye Küçült",
+    "minimize_desc": "Pencere kapatıldığında sistem tepsisinde çalışmaya devam eder.",
+    "group_language": "Dil",
+    "language_label": "Uygulama Dili",
+    "language_desc": "Sistem dilini otomatik algıla veya tercih ettiğiniz dili seçin.",
+    "lang_auto": "Sistem (Varsayılan)",
+    "group_about": "Hakkında",
+    "about_desc": "Kullanıcıların dijital farkındalık kazanmasına yardımcı olan hafif bir uygulama.",
+    "about_developer_label": "Geliştirici",
+    "about_license_label": "Lisans",
+    "about_website_label": "Kaynak Kodu",
+    "about_testers_label": "Özel Teşekkürler & Test Ekibi",
+    "about_testers_desc": "Tüm Mindsnap testerlarına teşekkürler!",
+    "about_testers_empty": "Gelecek beta test ekibimiz burada yer alacak."
+  },
+  "toasts": {
+    "app_added": "✓ {app} takip edilen uygulamalara eklendi",
+    "app_removed": "{app} takip edilen uygulamalardan çıkarıldı",
+    "app_add_failed": "Uygulama eklenemedi",
+    "app_remove_failed": "Uygulama çıkarılamadı",
+    "browse_failed": "Dosya seçilemedi",
+    "windows_refreshed": "Açık uygulamalar güncellendi",
+    "settings_saved": "Ayarlar kaydedildi",
+    "settings_save_failed": "Ayarlar kaydedilemedi",
+    "preset_set": "Süre {min} dk olarak ayarlandı"
+  },
+  "notifications": {
+    "first_alert_title": "Kullanım Hatırlatıcısı",
+    "first_alert_body": "{app} uygulamasını {minutes} dakikadır kullanıyorsun.",
+    "repeat_alert_title": "Kullanım Hatırlatıcısı",
+    "repeat_alert_body": "{app} uygulamasını artık {minutes} dakikadır kullanıyorsun. Kısa bir mola vermeyi düşünebilirsin.",
+    "tray_minimized_title": "Mindsnap sistem tepsisine küçültüldü",
+    "tray_minimized_body": "Mindsnap sistem tepsisinde takibe devam edecek. Bunu Mindsnap ayarlarından kapatabilirsiniz."
+  },
+  "tray": {
+    "show": "Mindsnap'ı Aç",
+    "quit": "Çıkış",
+    "tooltip": "Mindsnap"
+  },
+  "dialogs": {
+    "file_picker_title": "Mindsnap - Takip Edilecek Uygulamayı Seç",
+    "exe_filter": "Çalıştırılabilir Uygulama (*.exe)",
+    "desktop_filter": "Uygulama ve Masaüstü Dosyaları (*.desktop)"
+  },
+  "errors": {
+    "cannot_track_system": "Mindsnap veya sistem uygulamaları takip edilemez.",
+    "invalid_app_name": "Geçersiz uygulama adı.",
+    "min_initial_alert": "İlk uyarı süresi en az 1 dakika olmalıdır.",
+    "min_repeat_alert": "Tekrar hatırlatma aralığı en az 1 dakika olmalıdır."
+  }
+}

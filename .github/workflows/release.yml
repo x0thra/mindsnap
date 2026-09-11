@@ -1,0 +1,60 @@
+name: Release Builds
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'windows-latest'
+          - platform: 'ubuntu-22.04'
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev libfuse2
+
+      - name: Install npm dependencies
+        run: npm install
+
+      - name: Build Application
+        run: npm run build
+
+      - name: Release Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            src-tauri/target/release/mindsnap.exe
+            src-tauri/target/release/mindsnap
+            src-tauri/target/release/bundle/appimage/*.AppImage
+          tag_name: ${{ github.ref_name }}
+          name: 'Mindsnap ${{ github.ref_name }}'
+          body: 'Mindsnap release bundle. Standalone lightweight focus assistant app.'
+          draft: false
+          prerelease: true
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

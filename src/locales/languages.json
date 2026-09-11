@@ -1,0 +1,14 @@
+[
+  {
+    "code": "tr_tr",
+    "aliases": ["tr", "tr-tr", "tr_tr"],
+    "name": "Türkçe",
+    "nativeName": "Türkçe"
+  },
+  {
+    "code": "en_us",
+    "aliases": ["en", "en-us", "en_us"],
+    "name": "English (US)",
+    "nativeName": "English (US)"
+  }
+]

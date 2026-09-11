@@ -1,0 +1,125 @@
+{
+  "app": {
+    "title": "Mindsnap - Digital Awareness"
+  },
+  "titlebar": {
+    "hint": "Digital Awareness Assistant",
+    "minimize": "Minimize",
+    "maximize": "Maximize / Restore",
+    "close": "Close (Minimize to Tray)"
+  },
+  "brand": {
+    "name": "Mindsnap",
+    "tagline": "Digital Awareness"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "apps": "Applications",
+    "settings": "Settings"
+  },
+  "tabs": {
+    "dashboard": {
+      "title": "Dashboard",
+      "subtitle": "Track your app usage time."
+    },
+    "apps": {
+      "title": "Tracked Applications",
+      "subtitle": "Apps subject to time limits."
+    },
+    "settings": {
+      "title": "Settings",
+      "subtitle": "App behavior preferences and info."
+    }
+  },
+  "dashboard": {
+    "desktop": "Desktop",
+    "desktop_idle": "Desktop / Idle",
+    "focus_mode": "Focus Mode (Free)",
+    "tracked_mode": "Tracked Application",
+    "stat_active_app": "Active App",
+    "stat_threshold": "First Alert Threshold",
+    "stat_alerts_session": "Session Alerts",
+    "minutes_unit": "{count} minutes",
+    "repeat_unit_hint": "Repeat: {count} min",
+    "stat_alerts_zero": "0 alerts",
+    "stat_alerts_count": "{count} alerts",
+    "stat_alerts_none": "No threshold exceeded",
+    "stat_alerts_triggered": "Alert sent"
+  },
+  "apps": {
+    "search_placeholder": "Search applications...",
+    "btn_browse": "Add Manually",
+    "btn_browse_tooltip": "Select an executable application file from your computer",
+    "running_windows": "Running Windows",
+    "refresh_tooltip": "Refresh Windows",
+    "tracked_list": "Tracking List",
+    "btn_track": "+ Track",
+    "badge_tracked": "✓ Tracked",
+    "btn_untrack_tooltip": "Remove from tracking list",
+    "empty_running": "No running windows found.",
+    "empty_running_search": "No match for your search.",
+    "empty_tracked": "No tracked applications yet. Why not add one?",
+    "empty_tracked_hint": "You can add from running windows panel or click <b>Select Application File</b> above.",
+    "empty_tracked_search": "No match for your search."
+  },
+  "settings": {
+    "group_timing": "Reminder/Notification Thresholds",
+    "initial_alert_label": "Delay For The First Reminder",
+    "initial_alert_desc": "Time spent in a tracked app before sending the first notification.",
+    "repeat_alert_label": "Reminder Repeat Interval",
+    "repeat_alert_desc": "How often reminders should repeat if you keep using the application after the first alert.",
+    "min_unit": "{count} min",
+    "group_system": "Notification & System Behavior",
+    "sound_label": "Notification Sound",
+    "sound_desc": "Play sound for the notifications or not.",
+    "minimize_label": "Minimize to Tray on Close",
+    "minimize_desc": "Keep running in the system tray when the window is closed.",
+    "group_language": "Language",
+    "language_label": "Application Language",
+    "language_desc": "Automatically detect system language or choose your preferred language.",
+    "lang_auto": "System (Default)",
+    "group_about": "About",
+    "about_desc": "A lightweight app for helping people become more digitally aware.",
+    "about_developer_label": "Developer",
+    "about_license_label": "License",
+    "about_website_label": "Project Repository",
+    "about_testers_label": "Special Thanks & Testers",
+    "about_testers_desc": "Thanks to all Mindsnap testers here!",
+    "about_testers_empty": "Upcoming beta testers will be featured here."
+  },
+  "toasts": {
+    "app_added": "✓ {app} added to tracked apps",
+    "app_removed": "{app} removed from tracked apps",
+    "app_add_failed": "Could not add application",
+    "app_remove_failed": "Could not remove application",
+    "browse_failed": "Could not select file",
+    "windows_refreshed": "Windows refreshed",
+    "settings_saved": "Settings saved",
+    "settings_save_failed": "Could not save settings",
+    "preset_set": "Duration set to {min} min"
+  },
+  "notifications": {
+    "first_alert_title": "Usage Reminder",
+    "first_alert_body": "You are using {app} for {minutes} minutes. ",
+    "repeat_alert_title": "Usage Reminder",
+    "repeat_alert_body": "You've been using {app} for {minutes} minutes now. Consider taking a break.",
+    "tray_minimized_title": "Mindsnap minimized to tray",
+    "tray_minimized_body": "Mindsnap will keep tracking in the system tray. You can disable this in the Mindsnap settings."
+  },
+  "tray": {
+    "show": "Open Mindsnap",
+    "quit": "Quit",
+    "tooltip": "Mindsnap"
+  },
+  "dialogs": {
+    "file_picker_title": "Mindsnap - Select Application to Track",
+    "exe_filter": "App Executable (*.exe)",
+    "desktop_filter": "Application and Desktop Files (*.desktop)"
+  },
+  "errors": {
+    "cannot_track_system": "Mindsnap or system applications cannot be tracked.",
+    "invalid_app_name": "Invalid application name.",
+    "min_initial_alert": "Initial alert duration must be at least 1 minute.",
+    "min_repeat_alert": "Repeat alert interval must be at least 1 minute."
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "mindsnap",
+  "version": "1.0.0-beta",
+  "description": "Mindsnap - Digital Awareness & Usage Breaker",
+  "author": "x0thra",
+  "homepage": "https://github.com/x0thra/mindsnap",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/x0thra/mindsnap.git"
+  },
+  "bugs": {
+    "url": "https://github.com/x0thra/mindsnap/issues"
+  },
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0"
+  }
+}
