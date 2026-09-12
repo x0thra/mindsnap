@@ -263,9 +263,6 @@ pub async fn run_tracker_loop(
 pub fn send_notification(app_handle: &AppHandle, title: &str, body: &str, sound_enabled: bool) {
     let mut builder = app_handle.notification().builder();
     builder = builder.title(title).body(body);
-    if sound_enabled {
-        builder = builder.sound("default".to_string());
-    }
     if let Err(err) = builder.show() {
         eprintln!("Failed to display system notification: {:?}", err);
     }

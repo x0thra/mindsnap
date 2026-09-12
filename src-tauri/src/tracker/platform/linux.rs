@@ -17,6 +17,9 @@ pub fn play_notification_sound() {
         });
 }
 
+/// Initializes platform-specific notification subsystem (no-op on Linux as D-Bus handles it).
+pub fn init_platform_notifications() {}
+
 /// Filters system services, compositors, and panels specific to Linux and Wayland environments.
 pub fn is_platform_ignored_app(name: &str) -> bool {
     let lower = name.trim().to_lowercase();

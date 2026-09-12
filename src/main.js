@@ -25,6 +25,36 @@ const getInvoke = () => {
 
 const invoke = getInvoke();
 
+// Disable right-click context menu across the application
+document.addEventListener('contextmenu', (event) => {
+  event.preventDefault();
+  return false;
+});
+
+// Disable developer inspection, source viewing, and reload shortcuts
+document.addEventListener('keydown', (event) => {
+  // F12 (DevTools)
+  if (event.key === 'F12') {
+    event.preventDefault();
+    return false;
+  }
+  // Ctrl + Shift + I / J / C (Inspect / Console / Element Picker)
+  if (event.ctrlKey && event.shiftKey && ['I', 'i', 'J', 'j', 'C', 'c'].includes(event.key)) {
+    event.preventDefault();
+    return false;
+  }
+  // Ctrl + U (View Source)
+  if (event.ctrlKey && (event.key === 'u' || event.key === 'U')) {
+    event.preventDefault();
+    return false;
+  }
+  // F5 or Ctrl + R / Ctrl + Shift + R (Page reload)
+  if (event.key === 'F5' || (event.ctrlKey && (event.key === 'r' || event.key === 'R'))) {
+    event.preventDefault();
+    return false;
+  }
+});
+
 function getTabTitles(tabName) {
   switch (tabName) {
     case 'dashboard':

@@ -48,6 +48,8 @@ pub fn run() {
             commands::resolve_locale,
         ])
         .setup(move |app| {
+            tracker::platform::init_platform_notifications();
+
             // System tray menu
             let lang = &initial_config.language;
             let show_item = MenuItem::with_id(app, "show", i18n::tray_show(lang), true, None::<&str>)?;
