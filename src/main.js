@@ -753,7 +753,7 @@ async function initApp() {
   try {
     const version = await invoke('get_app_version');
     if (version) {
-      const displayVer = version.replace(/^1\.0\.0-beta/, '1.0-beta');
+      const displayVer = version.replace(/^(\d+\.\d+)\.0-beta/, '$1-beta');
       if (titlebarVersion) titlebarVersion.textContent = `v${displayVer}`;
       if (aboutAppVersion) aboutAppVersion.textContent = `v${displayVer}`;
     }
