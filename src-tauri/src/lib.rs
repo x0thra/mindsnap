@@ -2,6 +2,7 @@ pub mod commands;
 pub mod config;
 pub mod error;
 pub mod i18n;
+pub mod linux_wayland;
 pub mod tracker;
 
 use std::sync::Arc;
@@ -16,14 +17,23 @@ use crate::commands::AppState;
 use crate::config::AppConfig;
 use crate::tracker::state::TrackerStatus;
 
+/// Prepares display server compatibility shims before GTK/WebKit initialization.
+///
+/// On Linux AppImage packages under Wayland, this locates host `libwayland-client.so.0`
+/// and preloads it to eliminate `EGL_BAD_PARAMETER` aborts with host Mesa drivers.
+#[cfg(target_os = "linux")]
+pub fn ensure_display_server_compat() {
+    linux_wayland::preload_system_libwayland();
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn ensure_display_server_compat() {}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
     {
-        // Prevent WebKitGTK EGL_BAD_PARAMETER and display initialization crash on Wayland (KDE Plasma 6, Mesa)
-        if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
-            std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
-        }
+        ensure_display_server_compat();
         if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
             std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
         }
