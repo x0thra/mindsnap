@@ -47,9 +47,16 @@ pub fn play_notification_sound() {
     }
 }
 
-/// Returns the primary notification icon path (Windows uses AUMID and embedded resources).
+/// Returns the primary notification icon path for Windows toasts by provisioning the icon in AppData.
 pub fn get_notification_icon_path() -> Option<String> {
-    None
+    let app_dir = dirs::data_dir()?.join("mindsnap");
+    let icon_path = app_dir.join("notification_icon.png");
+    if !icon_path.exists() {
+        let icon_bytes: &[u8] = include_bytes!("../../../../src/icon.png");
+        let _ = std::fs::create_dir_all(&app_dir);
+        let _ = std::fs::write(&icon_path, icon_bytes);
+    }
+    Some(icon_path.to_string_lossy().to_string())
 }
 
 unsafe fn set_reg_dword(hkey: HKEY, name: &str, value: u32) {
@@ -82,6 +89,7 @@ fn register_notification_registry_settings() {
     let current_exe = std::env::current_exe()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "mindsnap.exe".to_string());
+    let icon_uri = get_notification_icon_path().unwrap_or(current_exe);
 
     unsafe {
         // 1. Register AppUserModelId for Windows Action Center
@@ -90,7 +98,7 @@ fn register_notification_registry_settings() {
         let mut hkey: HKEY = std::ptr::null_mut();
         if RegCreateKeyW(HKEY_CURRENT_USER, aumid_wide.as_ptr(), &mut hkey) == 0 {
             set_reg_sz(hkey, "DisplayName", "Mindsnap");
-            set_reg_sz(hkey, "IconUri", &current_exe);
+            set_reg_sz(hkey, "IconUri", &icon_uri);
             set_reg_dword(hkey, "ShowInSettings", 1);
             RegCloseKey(hkey);
         }
