@@ -189,7 +189,7 @@ pub fn get_friendly_app_name(app_name: &str) -> String {
     }
 }
 
-/// Detects active window using a prioritized platform cascade (Hyprland -> Sway -> KDE KWin -> X11/Xwayland).
+/// Detects active window using a prioritized platform cascade (Hyprland -> Sway -> KDE KWin -> GNOME Shell -> X11/Xwayland).
 pub fn get_active_window() -> Result<Option<ActiveAppInfo>> {
     // 1. Hyprland Wayland
     if std::env::var("HYPRLAND_INSTANCE_SIGNATURE").is_ok() {
@@ -210,7 +210,12 @@ pub fn get_active_window() -> Result<Option<ActiveAppInfo>> {
         return Ok(Some(info));
     }
 
-    // 4. Standard X11 / Xwayland query via xprop or xdotool
+    // 4. GNOME Shell (D-Bus Introspect or Eval query)
+    if let Some(info) = get_active_window_gnome() {
+        return Ok(Some(info));
+    }
+
+    // 5. Standard X11 / Xwayland query via xprop or xdotool
     if std::env::var("DISPLAY").is_ok() {
         if let Some(info) = get_active_window_x11() {
             return Ok(Some(info));
@@ -400,6 +405,136 @@ pub fn parse_kwin_active_client(text: &str) -> Option<ActiveAppInfo> {
         window_title: caption,
         process_id: pid,
     })
+}
+
+/// Queries active window on GNOME Shell via D-Bus Introspect or Eval.
+fn get_active_window_gnome() -> Option<ActiveAppInfo> {
+    // 1. Try org.gnome.Shell.Introspect (GNOME 3.36+ / GNOME 40-47)
+    if let Ok(output) = Command::new("gdbus")
+        .args([
+            "call",
+            "--session",
+            "--dest",
+            "org.gnome.Shell.Introspect",
+            "--object-path",
+            "/org/gnome/Shell/Introspect",
+            "--method",
+            "org.gnome.Shell.Introspect.GetWindows",
+        ])
+        .output()
+    {
+        if output.status.success() {
+            let out_str = String::from_utf8_lossy(&output.stdout);
+            if let Some(info) = parse_gnome_introspect_windows(&out_str) {
+                return Some(info);
+            }
+        }
+    }
+
+    // 2. Fallback to org.gnome.Shell.Eval if enabled
+    if let Ok(output) = Command::new("gdbus")
+        .args([
+            "call",
+            "--session",
+            "--dest",
+            "org.gnome.Shell",
+            "--object-path",
+            "/org/gnome/Shell",
+            "--method",
+            "org.gnome.Shell.Eval",
+            "let w = global.display.focus_window; w ? (w.get_wm_class() || '') + ':::' + (w.get_title() || '') : ''",
+        ])
+        .output()
+    {
+        if output.status.success() {
+            let out_str = String::from_utf8_lossy(&output.stdout);
+            if let Some(first_quote) = out_str.find('\'') {
+                if let Some(last_quote) = out_str.rfind('\'') {
+                    if last_quote > first_quote {
+                        let inner = &out_str[first_quote + 1..last_quote];
+                        if let Some((wm_class, title)) = inner.split_once(":::") {
+                            let clean = wm_class.trim();
+                            if !clean.is_empty() && !is_platform_ignored_app(clean) {
+                                return Some(ActiveAppInfo {
+                                    process_name: clean.to_string(),
+                                    window_title: title.trim().to_string(),
+                                    process_id: 0,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Parses active focused window from GNOME Shell Introspect GetWindows output.
+pub fn parse_gnome_introspect_windows(text: &str) -> Option<ActiveAppInfo> {
+    if !text.contains("has-focus") || !text.contains("<true>") {
+        return None;
+    }
+
+    for chunk in text.split('}') {
+        if chunk.contains("has-focus") && chunk.contains("<true>") {
+            let mut app_id = String::new();
+            let mut wm_class = String::new();
+            let mut title = String::new();
+
+            if let Some(pos) = chunk.find("app-id") {
+                if let Some(sub) = chunk.get(pos..) {
+                    if let Some(val) = extract_gvariant_string(sub) {
+                        app_id = val;
+                    }
+                }
+            }
+
+            if let Some(pos) = chunk.find("wm-class") {
+                if let Some(sub) = chunk.get(pos..) {
+                    if let Some(val) = extract_gvariant_string(sub) {
+                        wm_class = val;
+                    }
+                }
+            }
+
+            if let Some(pos) = chunk.find("title") {
+                if let Some(sub) = chunk.get(pos..) {
+                    if let Some(val) = extract_gvariant_string(sub) {
+                        title = val;
+                    }
+                }
+            }
+
+            let raw_process = if !app_id.is_empty() {
+                app_id
+            } else {
+                wm_class
+            };
+
+            let clean = raw_process.trim().to_string();
+            let clean = clean.strip_suffix(".desktop").unwrap_or(&clean);
+            if clean.is_empty() || is_platform_ignored_app(clean) {
+                return None;
+            }
+
+            return Some(ActiveAppInfo {
+                process_name: clean.to_string(),
+                window_title: title,
+                process_id: 0,
+            });
+        }
+    }
+
+    None
+}
+
+fn extract_gvariant_string(text: &str) -> Option<String> {
+    let start_quote = text.find("<'")? + 2;
+    let remainder = text.get(start_quote..)?;
+    let end_quote = remainder.find("'>")?;
+    Some(remainder[..end_quote].to_string())
 }
 
 /// Queries active window via standard X11 / Xwayland utilities (xprop or xdotool).
@@ -1035,6 +1170,17 @@ mod tests {
     fn test_base64_encode_bytes() {
         assert_eq!(base64_encode_bytes(b"hello"), "aGVsbG8=");
         assert_eq!(base64_encode_bytes(b""), "");
+    }
+
+    #[test]
+    fn test_gnome_introspect_windows_parsing() {
+        let sample = "({'1234': {'title': <'Mindsnap - Visual Studio Code'>, 'wm-class': <'code'>, 'app-id': <'code.desktop'>, 'has-focus': <true>}, '5678': {'title': <'Settings'>, 'wm-class': <'gnome-control-center'>, 'app-id': <'gnome-control-center.desktop'>, 'has-focus': <false>}},)";
+        let parsed = parse_gnome_introspect_windows(sample);
+        assert!(parsed.is_some());
+        if let Some(info) = parsed {
+            assert_eq!(info.process_name, "code");
+            assert_eq!(info.window_title, "Mindsnap - Visual Studio Code");
+        }
     }
 }
 
