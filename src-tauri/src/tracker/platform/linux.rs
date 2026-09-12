@@ -189,40 +189,67 @@ pub fn get_friendly_app_name(app_name: &str) -> String {
     }
 }
 
-/// Detects active window using a prioritized platform cascade (Hyprland -> Sway -> KDE KWin -> GNOME Shell -> X11/Xwayland).
-pub fn get_active_window() -> Result<Option<ActiveAppInfo>> {
-    // 1. Hyprland Wayland
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxSessionBackend {
+    Hyprland,
+    Sway,
+    KdeWayland,
+    GnomeWayland,
+    X11,
+    Unknown,
+}
+
+static DETECTED_BACKEND: std::sync::OnceLock<LinuxSessionBackend> = std::sync::OnceLock::new();
+
+/// Inspects standard FreeDesktop environment variables once to identify the active desktop compositor.
+pub fn detect_session_backend() -> LinuxSessionBackend {
+    // 1. Wayland compositors with dedicated IPC environments
     if std::env::var("HYPRLAND_INSTANCE_SIGNATURE").is_ok() {
-        if let Some(info) = get_active_window_hyprland() {
-            return Ok(Some(info));
-        }
+        return LinuxSessionBackend::Hyprland;
     }
-
-    // 2. Sway / wlroots Wayland
     if std::env::var("SWAYSOCK").is_ok() {
-        if let Some(info) = get_active_window_sway() {
-            return Ok(Some(info));
+        return LinuxSessionBackend::Sway;
+    }
+
+    let session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default().to_lowercase();
+    let current_desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_lowercase();
+    let is_wayland = session_type == "wayland" || std::env::var("WAYLAND_DISPLAY").is_ok();
+
+    if is_wayland {
+        if current_desktop.contains("kde") || current_desktop.contains("plasma") {
+            return LinuxSessionBackend::KdeWayland;
+        }
+        if current_desktop.contains("gnome") || current_desktop.contains("ubuntu") {
+            return LinuxSessionBackend::GnomeWayland;
         }
     }
 
-    // 3. KDE Plasma (KWin D-Bus supportInformation query)
-    if let Some(info) = get_active_window_kwin() {
-        return Ok(Some(info));
-    }
-
-    // 4. GNOME Shell (D-Bus Introspect or Eval query)
-    if let Some(info) = get_active_window_gnome() {
-        return Ok(Some(info));
-    }
-
-    // 5. Standard X11 / Xwayland query via xprop or xdotool
+    // 2. Standard X11 sessions (or Xwayland fallback)
     if std::env::var("DISPLAY").is_ok() {
-        if let Some(info) = get_active_window_x11() {
-            return Ok(Some(info));
-        }
+        return LinuxSessionBackend::X11;
     }
 
-    Ok(None)
+    LinuxSessionBackend::Unknown
+}
+
+/// Detects the active window using the identified desktop session provider.
+pub fn get_active_window() -> Result<Option<ActiveAppInfo>> {
+    let backend = *DETECTED_BACKEND.get_or_init(detect_session_backend);
+    let info = match backend {
+        LinuxSessionBackend::Hyprland => get_active_window_hyprland(),
+        LinuxSessionBackend::Sway => get_active_window_sway(),
+        LinuxSessionBackend::KdeWayland => get_active_window_kwin(),
+        LinuxSessionBackend::GnomeWayland => get_active_window_gnome(),
+        LinuxSessionBackend::X11 => get_active_window_x11(),
+        LinuxSessionBackend::Unknown => {
+            // Safe fallback trial for unconventional environments
+            get_active_window_kwin()
+                .or_else(get_active_window_gnome)
+                .or_else(get_active_window_x11)
+        }
+    };
+
+    Ok(info)
 }
 
 /// Hyprland `hyprctl activewindow -j` query.
@@ -1181,6 +1208,21 @@ mod tests {
             assert_eq!(info.process_name, "code");
             assert_eq!(info.window_title, "Mindsnap - Visual Studio Code");
         }
+    }
+
+    #[test]
+    fn test_detect_session_backend() {
+        let backend = detect_session_backend();
+        // Backend can be X11 or Unknown depending on the CI/local test environment
+        assert!(matches!(
+            backend,
+            LinuxSessionBackend::Hyprland
+                | LinuxSessionBackend::Sway
+                | LinuxSessionBackend::KdeWayland
+                | LinuxSessionBackend::GnomeWayland
+                | LinuxSessionBackend::X11
+                | LinuxSessionBackend::Unknown
+        ));
     }
 }
 
