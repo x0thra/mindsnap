@@ -48,7 +48,6 @@ jobs:
         with:
           files: |
             src-tauri/target/release/mindsnap.exe
-            src-tauri/target/release/mindsnap
             src-tauri/target/release/bundle/appimage/*.AppImage
           tag_name: ${{ github.ref_name }}
           name: 'Mindsnap ${{ github.ref_name }}'
