@@ -108,141 +108,13 @@ fn register_notification_registry_settings() {
     }
 }
 
-fn base64_encode_bytes(bytes: &[u8]) -> String {
-    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let triple = (b0 << 16) | (b1 << 8) | b2;
-
-        result.push(CHARSET[((triple >> 18) & 0x3F) as usize] as char);
-        result.push(CHARSET[((triple >> 12) & 0x3F) as usize] as char);
-        if chunk.len() > 1 {
-            result.push(CHARSET[((triple >> 6) & 0x3F) as usize] as char);
-        } else {
-            result.push('=');
-        }
-        if chunk.len() > 2 {
-            result.push(CHARSET[(triple & 0x3F) as usize] as char);
-        } else {
-            result.push('=');
-        }
-    }
-    result
-}
-
-fn ensure_start_menu_shortcut() {
-    let current_exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(_) => return,
-    };
-    let app_data = match dirs::data_dir() {
-        Some(d) => d,
-        None => return,
-    };
-    let shortcut_path = app_data.join("Microsoft\\Windows\\Start Menu\\Programs\\Mindsnap.lnk");
-
-    if shortcut_path.exists() {
-        return;
-    }
-
-    let target_str = current_exe.to_string_lossy().to_string();
-    let shortcut_str = shortcut_path.to_string_lossy().to_string();
-
-    std::thread::spawn(move || {
-        use std::os::windows::process::CommandExt;
-        let script = format!(
-            r#"$cs = @"
-using System;
-using System.Runtime.InteropServices;
-using System.Runtime.InteropServices.ComTypes;
-namespace SC {{
-    [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
-    public class SL {{}}
-    [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("000214F9-0000-0000-C000-000000000046")]
-    public interface IS {{
-        void GP(out IntPtr a, int b, out IntPtr c, int d);
-        void GI(out IntPtr a);
-        void SI(IntPtr a);
-        void GD(out IntPtr a, int b);
-        void SD(string a);
-        void GW(out IntPtr a, int b);
-        void SW(string a);
-        void GA(out IntPtr a, int b);
-        void SA(string a);
-        void GH(out short a);
-        void SH(short a);
-        void GS(out int a);
-        void SS(int a);
-        void GL(out IntPtr a, int b, out int c);
-        void SLI(string a, int b);
-        void SR(string a, int b);
-        void R(IntPtr a, int b);
-        void SetPath([MarshalAs(UnmanagedType.LPWStr)] string a);
-    }}
-    [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99")]
-    public interface IP {{
-        void GC(out uint a);
-        void GA(uint a, out PK b);
-        void GV(ref PK a, out PV b);
-        void SV(ref PK a, ref PV b);
-        void Commit();
-    }}
-    [StructLayout(LayoutKind.Sequential, Pack = 4)]
-    public struct PK {{
-        public Guid a; public uint b;
-        public PK(Guid g, uint i) {{ a = g; b = i; }}
-    }}
-    [StructLayout(LayoutKind.Explicit)]
-    public struct PV {{
-        [FieldOffset(0)] public ushort a;
-        [FieldOffset(8)] public IntPtr b;
-        public static PV S(string s) {{
-            var v = new PV(); v.a = 31; v.b = Marshal.StringToCoTaskMemUni(s); return v;
-        }}
-    }}
-    public class C {{
-        public static void M(string p, string t, string a) {{
-            var l = (IS)new SL();
-            l.SetPath(t);
-            var ps = (IP)l;
-            var k = new PK(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 5);
-            var v = PV.S(a);
-            ps.SV(ref k, ref v);
-            ps.Commit();
-            ((IPersistFile)l).Save(p, true);
-        }}
-    }}
-}}
-"@
-Add-Type -TypeDefinition $cs
-[SC.C]::M('{shortcut_str}', '{target_str}', 'com.mindsnap.desktop')
-"#
-        );
-
-        let utf16_bytes: Vec<u8> = script
-            .encode_utf16()
-            .flat_map(|u| u.to_le_bytes())
-            .collect();
-        let encoded = base64_encode_bytes(&utf16_bytes);
-
-        let _ = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-WindowStyle", "Hidden", "-EncodedCommand", &encoded])
-            .creation_flags(0x08000000) // CREATE_NO_WINDOW
-            .output();
-    });
-}
-
-/// Initializes Windows Toast Notification subsystem: registers AUMID, ensures banner permissions and shortcut.
+/// Initializes Windows Toast Notification subsystem: registers AUMID and enables Action Center banners.
 pub fn init_platform_notifications() {
     let aumid: Vec<u16> = "com.mindsnap.desktop\0".encode_utf16().collect();
     unsafe {
         let _ = SetCurrentProcessExplicitAppUserModelID(aumid.as_ptr());
     }
     register_notification_registry_settings();
-    ensure_start_menu_shortcut();
 }
 
 static ICON_CACHE: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
@@ -897,13 +769,7 @@ mod tests {
 
     #[test]
     fn test_init_platform_notifications() {
-        // Must execute safely and initialize registry and notifications
+        // Must execute safely and initialize registry and notifications without error
         init_platform_notifications();
-        // Give background thread a moment to create the start menu shortcut if needed
-        std::thread::sleep(std::time::Duration::from_millis(2500));
-        if let Some(app_data) = dirs::data_dir() {
-            let shortcut = app_data.join("Microsoft\\Windows\\Start Menu\\Programs\\Mindsnap.lnk");
-            assert!(shortcut.exists(), "Mindsnap.lnk shortcut should have been created");
-        }
     }
 }

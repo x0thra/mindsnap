@@ -205,12 +205,22 @@ pub fn open_external_url(url: String) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt;
-        std::process::Command::new("cmd")
-            .args(["/c", "start", "", &url])
-            .creation_flags(0x08000000)
-            .spawn()
-            .map_err(|e| e.to_string())?;
+        use windows_sys::Win32::UI::Shell::ShellExecuteW;
+        let url_wide: Vec<u16> = format!("{url}\0").encode_utf16().collect();
+        let open_wide: Vec<u16> = "open\0".encode_utf16().collect();
+        unsafe {
+            let res = ShellExecuteW(
+                std::ptr::null_mut(),
+                open_wide.as_ptr(),
+                url_wide.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                1, // SW_SHOWNORMAL
+            );
+            if (res as usize) <= 32 {
+                return Err("Failed to open browser".to_string());
+            }
+        }
     }
 
     #[cfg(target_os = "linux")]
