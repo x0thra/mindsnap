@@ -17,8 +17,37 @@ pub fn play_notification_sound() {
         });
 }
 
-/// Initializes platform-specific notification subsystem (no-op on Linux as D-Bus handles it).
-pub fn init_platform_notifications() {}
+/// Initializes platform-specific notification subsystem by provisioning the app icon into standard XDG directories.
+pub fn init_platform_notifications() {
+    if let Some(home) = dirs::home_dir() {
+        let icon_bytes: &[u8] = include_bytes!("../../../../src/icon.png");
+        let icon_dirs = [
+            home.join(".local/share/icons/hicolor/256x256/apps"),
+            home.join(".local/share/icons/hicolor/128x128/apps"),
+            home.join(".local/share/pixmaps"),
+        ];
+
+        for dir in &icon_dirs {
+            if fs::create_dir_all(dir).is_ok() {
+                let icon_file = dir.join("mindsnap.png");
+                if !icon_file.exists() {
+                    let _ = fs::write(&icon_file, icon_bytes);
+                }
+            }
+        }
+    }
+}
+
+/// Returns the primary path to the installed Mindsnap desktop notification icon on Linux.
+pub fn get_notification_icon_path() -> Option<String> {
+    let home = dirs::home_dir()?;
+    let path = home.join(".local/share/icons/hicolor/256x256/apps/mindsnap.png");
+    if path.exists() {
+        Some(path.to_string_lossy().to_string())
+    } else {
+        None
+    }
+}
 
 /// Filters system services, compositors, and panels specific to Linux and Wayland environments.
 pub fn is_platform_ignored_app(name: &str) -> bool {
@@ -160,28 +189,28 @@ pub fn get_friendly_app_name(app_name: &str) -> String {
     }
 }
 
-/// Detects active window using a prioritized platform cascade (Hyprland -> Sway -> D-Bus -> X11).
+/// Detects active window using a prioritized platform cascade (Hyprland -> Sway -> KDE KWin -> X11/Xwayland).
 pub fn get_active_window() -> Result<Option<ActiveAppInfo>> {
-    // 1. Hyprland
+    // 1. Hyprland Wayland
     if std::env::var("HYPRLAND_INSTANCE_SIGNATURE").is_ok() {
         if let Some(info) = get_active_window_hyprland() {
             return Ok(Some(info));
         }
     }
 
-    // 2. Sway / wlroots
+    // 2. Sway / wlroots Wayland
     if std::env::var("SWAYSOCK").is_ok() {
         if let Some(info) = get_active_window_sway() {
             return Ok(Some(info));
         }
     }
 
-    // 3. GNOME Shell / KDE Plasma D-Bus
-    if let Some(info) = get_active_window_dbus() {
+    // 3. KDE Plasma (KWin D-Bus supportInformation query)
+    if let Some(info) = get_active_window_kwin() {
         return Ok(Some(info));
     }
 
-    // 4. X11 / EWMH standard query
+    // 4. Standard X11 / Xwayland query via xprop or xdotool
     if std::env::var("DISPLAY").is_ok() {
         if let Some(info) = get_active_window_x11() {
             return Ok(Some(info));
@@ -191,7 +220,7 @@ pub fn get_active_window() -> Result<Option<ActiveAppInfo>> {
     Ok(None)
 }
 
-/// Hyprland `hyprctl activewindow -j` çağrısı ile aktif pencereyi bulur.
+/// Hyprland `hyprctl activewindow -j` query.
 fn get_active_window_hyprland() -> Option<ActiveAppInfo> {
     let output = Command::new("hyprctl")
         .args(["activewindow", "-j"])
@@ -280,25 +309,123 @@ fn find_focused_sway_node(node: &serde_json::Value) -> Option<ActiveAppInfo> {
     None
 }
 
-/// Queries active window via KDE kdotool or D-Bus services.
-fn get_active_window_dbus() -> Option<ActiveAppInfo> {
-    if let Ok(output) = Command::new("kdotool").args(["getactivewindow"]).output() {
+/// Queries active window on KDE Plasma via KWin D-Bus supportInformation.
+fn get_active_window_kwin() -> Option<ActiveAppInfo> {
+    let output = Command::new("gdbus")
+        .args([
+            "call",
+            "--session",
+            "--dest",
+            "org.kde.KWin",
+            "--object-path",
+            "/KWin",
+            "--method",
+            "org.kde.KWin.supportInformation",
+        ])
+        .output()
+        .or_else(|_| {
+            Command::new("qdbus")
+                .args(["org.kde.KWin", "/KWin", "supportInformation"])
+                .output()
+        })
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    parse_kwin_active_client(&text)
+}
+
+/// Parses active client metadata from KWin supportInformation output.
+pub fn parse_kwin_active_client(text: &str) -> Option<ActiveAppInfo> {
+    let mut in_active_section = false;
+    let mut caption = String::new();
+    let mut resource_class = String::new();
+    let mut resource_name = String::new();
+    let mut pid: u32 = 0;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.contains("Active Client") || trimmed.contains("Active Window") {
+            in_active_section = true;
+            continue;
+        }
+
+        if in_active_section {
+            if trimmed.starts_with("Client")
+                || trimmed.starts_with("All Clients")
+                || trimmed.starts_with("===")
+                || trimmed.starts_with("Screens:")
+                || trimmed.starts_with("Outputs:")
+            {
+                break;
+            }
+
+            if let Some((k, v)) = trimmed.split_once(':') {
+                let key = k.trim().to_lowercase();
+                let val = v.trim().trim_matches('"').trim_matches('\'').trim_matches('\\');
+                match key.as_str() {
+                    "caption" if caption.is_empty() => caption = val.to_string(),
+                    "resourceclass" if resource_class.is_empty() => {
+                        resource_class = val.to_string()
+                    }
+                    "resourcename" if resource_name.is_empty() => {
+                        resource_name = val.to_string()
+                    }
+                    "pid" if pid == 0 => pid = val.parse::<u32>().unwrap_or(0),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    let process_name = if !resource_class.is_empty() {
+        resource_class
+    } else if !resource_name.is_empty() {
+        resource_name
+    } else if pid > 0 {
+        get_process_comm_by_pid(pid).unwrap_or_default()
+    } else {
+        return None;
+    };
+
+    if process_name.is_empty() || is_platform_ignored_app(&process_name) {
+        return None;
+    }
+
+    Some(ActiveAppInfo {
+        process_name,
+        window_title: caption,
+        process_id: pid,
+    })
+}
+
+/// Queries active window via standard X11 / Xwayland utilities (xprop or xdotool).
+fn get_active_window_x11() -> Option<ActiveAppInfo> {
+    // 1. Try xprop -root _NET_ACTIVE_WINDOW (standard across all X11/Xwayland sessions)
+    if let Ok(output) = Command::new("xprop").args(["-root", "_NET_ACTIVE_WINDOW"]).output() {
+        if output.status.success() {
+            let out_str = String::from_utf8_lossy(&output.stdout);
+            if let Some(win_id) = out_str.split('#').nth(1).map(|s| s.trim()) {
+                if !win_id.is_empty() && win_id != "0x0" {
+                    if let Some(info) = get_x11_window_info_by_id(win_id) {
+                        return Some(info);
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Fallback to xdotool if available
+    if let Ok(output) = Command::new("xdotool").args(["getactivewindow"]).output() {
         if output.status.success() {
             let win_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !win_id.is_empty() {
-                let name_out = Command::new("kdotool")
-                    .args(["getwindowname", &win_id])
-                    .output()
-                    .ok();
-                let title = name_out
-                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                    .unwrap_or_default();
-
-                return Some(ActiveAppInfo {
-                    process_name: "kwin_active".to_string(),
-                    window_title: title,
-                    process_id: 0,
-                });
+            if !win_id.is_empty() && win_id != "0" {
+                if let Some(info) = get_x11_window_info_by_id(&win_id) {
+                    return Some(info);
+                }
             }
         }
     }
@@ -306,10 +433,9 @@ fn get_active_window_dbus() -> Option<ActiveAppInfo> {
     None
 }
 
-/// Queries active window via standard X11 EWMH utilities (xdotool / xprop).
-fn get_active_window_x11() -> Option<ActiveAppInfo> {
-    let output = Command::new("xdotool")
-        .args(["getactivewindow"])
+fn get_x11_window_info_by_id(win_id: &str) -> Option<ActiveAppInfo> {
+    let output = Command::new("xprop")
+        .args(["-id", win_id, "WM_CLASS", "_NET_WM_NAME", "_NET_WM_PID"])
         .output()
         .ok()?;
 
@@ -317,32 +443,41 @@ fn get_active_window_x11() -> Option<ActiveAppInfo> {
         return None;
     }
 
-    let win_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if win_id.is_empty() {
-        return None;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut wm_class = String::new();
+    let mut title = String::new();
+    let mut pid: u32 = 0;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("WM_CLASS") {
+            if let Some((_, val)) = trimmed.split_once('=') {
+                if let Some(first_class) = val.split(',').next() {
+                    wm_class = first_class.trim().trim_matches('"').to_string();
+                }
+            }
+        } else if (trimmed.starts_with("_NET_WM_NAME") || trimmed.starts_with("WM_NAME")) && title.is_empty() {
+            if let Some((_, val)) = trimmed.split_once('=') {
+                title = val.trim().trim_matches('"').to_string();
+            }
+        } else if trimmed.starts_with("_NET_WM_PID") {
+            if let Some((_, val)) = trimmed.split_once('=') {
+                pid = val.trim().parse::<u32>().unwrap_or(0);
+            }
+        }
     }
 
-    let title_out = Command::new("xdotool")
-        .args(["getwindowname", &win_id])
-        .output()
-        .ok();
-    let title = title_out
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
-
-    let pid_out = Command::new("xdotool")
-        .args(["getwindowpid", &win_id])
-        .output()
-        .ok();
-    let pid = pid_out
-        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().ok())
-        .unwrap_or(0);
-
-    let process_name = if pid > 0 {
+    let process_name = if !wm_class.is_empty() {
+        wm_class
+    } else if pid > 0 {
         get_process_comm_by_pid(pid).unwrap_or_else(|| "x11_app".to_string())
     } else {
-        "x11_app".to_string()
+        return None;
     };
+
+    if process_name.is_empty() || is_platform_ignored_app(&process_name) {
+        return None;
+    }
 
     Some(ActiveAppInfo {
         process_name,
@@ -357,20 +492,369 @@ fn get_process_comm_by_pid(pid: u32) -> Option<String> {
     fs::read_to_string(path).ok().map(|s| s.trim().to_string())
 }
 
-/// Lists running applications matched against installed desktop entries.
+/// Reads non-truncated process name from /proc/[pid]/cmdline or falls back to comm.
+fn get_process_name_from_proc(pid_dir: &Path) -> Option<String> {
+    if let Ok(cmdline_bytes) = fs::read(pid_dir.join("cmdline")) {
+        if let Some(first_null) = cmdline_bytes.iter().position(|&b| b == 0) {
+            let arg0 = String::from_utf8_lossy(&cmdline_bytes[..first_null]);
+            if let Some(name) = Path::new(arg0.as_ref()).file_name().and_then(|n| n.to_str()) {
+                let trimmed = name.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+    }
+    get_process_comm_by_pid_dir(pid_dir)
+}
+
+fn get_process_comm_by_pid_dir(pid_dir: &Path) -> Option<String> {
+    fs::read_to_string(pid_dir.join("comm")).ok().map(|s| s.trim().to_string())
+}
+
+/// Gets the effective user UID of the current process from /proc/self/status.
+fn get_current_user_uid() -> Option<u32> {
+    let content = fs::read_to_string("/proc/self/status").ok()?;
+    for line in content.lines() {
+        if line.starts_with("Uid:") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                return parts[1].parse::<u32>().ok();
+            }
+        }
+    }
+    None
+}
+
+/// Checks whether a process in /proc is owned by the current user.
+fn is_process_owned_by_user(proc_path: &Path, current_uid: Option<u32>) -> bool {
+    let status_path = proc_path.join("status");
+    let content = match fs::read_to_string(status_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    for line in content.lines() {
+        if line.starts_with("Uid:") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                if let Ok(uid) = parts[1].parse::<u32>() {
+                    if let Some(curr) = current_uid {
+                        return uid == curr;
+                    } else {
+                        return uid >= 1000;
+                    }
+                }
+            }
+            break;
+        }
+    }
+    false
+}
+
+/// Encodes binary data to standard Base64 string.
+fn base64_encode_bytes(bytes: &[u8]) -> String {
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+
+        result.push(CHARSET[((triple >> 18) & 0x3F) as usize] as char);
+        result.push(CHARSET[((triple >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            result.push(CHARSET[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
+        if chunk.len() > 2 {
+            result.push(CHARSET[(triple & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
+    }
+    result
+}
+
+/// Reads an icon file from disk and formats it as a Base64 data URI.
+fn read_icon_as_data_uri(path: &Path) -> Option<String> {
+    let bytes = fs::read(path).ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let mime = match ext.as_str() {
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "xpm" => "image/x-xpixmap",
+        _ => "image/png",
+    };
+
+    let encoded = base64_encode_bytes(&bytes);
+    Some(format!("data:{mime};base64,{encoded}"))
+}
+
+/// Searches standard XDG icon themes and pixmap directories to resolve an icon to a data URI.
+fn resolve_linux_icon(icon_name: &str) -> Option<String> {
+    let trimmed = icon_name.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let direct_path = Path::new(trimmed);
+    if direct_path.is_absolute() {
+        if direct_path.is_file() {
+            return read_icon_as_data_uri(direct_path);
+        }
+        for ext in &["png", "svg"] {
+            let with_ext = direct_path.with_extension(ext);
+            if with_ext.is_file() {
+                return read_icon_as_data_uri(&with_ext);
+            }
+        }
+    }
+
+    let mut search_bases = vec![
+        PathBuf::from("/usr/share/pixmaps"),
+        PathBuf::from("/usr/share/icons/hicolor"),
+        PathBuf::from("/usr/local/share/icons/hicolor"),
+        PathBuf::from("/var/lib/flatpak/exports/share/icons/hicolor"),
+        PathBuf::from("/var/lib/snapd/desktop/icons"),
+    ];
+
+    if let Some(home) = dirs::home_dir() {
+        search_bases.push(home.join(".local/share/icons/hicolor"));
+        search_bases.push(home.join(".local/share/pixmaps"));
+    }
+
+    let clean_name = trimmed
+        .strip_suffix(".png")
+        .or_else(|| trimmed.strip_suffix(".svg"))
+        .unwrap_or(trimmed);
+
+    let resolutions = [
+        "256x256/apps",
+        "128x128/apps",
+        "64x64/apps",
+        "48x48/apps",
+        "scalable/apps",
+        "32x32/apps",
+    ];
+
+    for base in &search_bases {
+        if !base.exists() {
+            continue;
+        }
+
+        for ext in &["png", "svg"] {
+            let candidate = base.join(format!("{clean_name}.{ext}"));
+            if candidate.is_file() {
+                if let Some(uri) = read_icon_as_data_uri(&candidate) {
+                    return Some(uri);
+                }
+            }
+        }
+
+        for res in &resolutions {
+            let res_dir = base.join(res);
+            if res_dir.exists() {
+                for ext in &["png", "svg"] {
+                    let candidate = res_dir.join(format!("{clean_name}.{ext}"));
+                    if candidate.is_file() {
+                        if let Some(uri) = read_icon_as_data_uri(&candidate) {
+                            return Some(uri);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+#[derive(Default, Clone)]
+struct DesktopMeta {
+    name: String,
+    exec: Option<String>,
+    startup_wm_class: Option<String>,
+    icon_base64: Option<String>,
+}
+
+/// Indexes .desktop application entries from standard XDG data directories.
+fn load_desktop_entries() -> HashMap<String, DesktopMeta> {
+    let mut map = HashMap::new();
+    let mut search_dirs = vec![
+        PathBuf::from("/usr/share/applications"),
+        PathBuf::from("/usr/local/share/applications"),
+        PathBuf::from("/var/lib/flatpak/exports/share/applications"),
+        PathBuf::from("/var/lib/snapd/desktop/applications"),
+    ];
+
+    if let Some(home) = dirs::home_dir() {
+        search_dirs.push(home.join(".local/share/applications"));
+        search_dirs.push(home.join(".local/share/flatpak/exports/share/applications"));
+    }
+
+    for dir in search_dirs {
+        if !dir.exists() {
+            continue;
+        }
+
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("desktop") {
+                    if let Some(meta) = parse_desktop_file(&path) {
+                        if let Some(ref exec) = meta.exec {
+                            map.insert(exec.to_lowercase(), meta.clone());
+                        }
+                        if let Some(ref wm_class) = meta.startup_wm_class {
+                            map.insert(wm_class.to_lowercase(), meta.clone());
+                        }
+                        if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
+                            map.insert(file_stem.to_lowercase(), meta);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    map
+}
+
+/// Matches an application against indexed desktop entries using exact, class, and hyphenated forms.
+fn find_desktop_meta<'a>(
+    map: &'a HashMap<String, DesktopMeta>,
+    app_name: &str,
+) -> Option<&'a DesktopMeta> {
+    let lower = app_name.trim().to_lowercase();
+    let clean = lower.strip_suffix(".desktop").unwrap_or(&lower);
+    let clean = clean.strip_suffix(".exe").unwrap_or(clean);
+
+    if let Some(meta) = map.get(clean) {
+        return Some(meta);
+    }
+
+    for (key, meta) in map {
+        if key == clean
+            || key.starts_with(&format!("{clean}-"))
+            || clean.starts_with(&format!("{key}-"))
+            || (meta
+                .startup_wm_class
+                .as_deref()
+                .map(|c| c.eq_ignore_ascii_case(clean))
+                .unwrap_or(false))
+        {
+            return Some(meta);
+        }
+    }
+
+    None
+}
+
+/// Parses an individual .desktop file safely.
+fn parse_desktop_file(path: &Path) -> Option<DesktopMeta> {
+    let content = fs::read_to_string(path).ok()?;
+    let mut in_desktop_entry = false;
+    let mut name = None;
+    let mut exec = None;
+    let mut icon_name = None;
+    let mut startup_wm_class = None;
+    let mut no_display = false;
+    let mut is_application = true;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[Desktop Entry]" {
+            in_desktop_entry = true;
+            continue;
+        } else if trimmed.starts_with('[') && in_desktop_entry {
+            break;
+        }
+
+        if !in_desktop_entry {
+            continue;
+        }
+
+        if let Some((key, val)) = trimmed.split_once('=') {
+            let key = key.trim();
+            let val = val.trim();
+            match key {
+                "Type" => {
+                    if !val.eq_ignore_ascii_case("Application") {
+                        is_application = false;
+                    }
+                }
+                "Name" if name.is_none() => name = Some(val.to_string()),
+                "Exec" if exec.is_none() => {
+                    let first_word = val.split_whitespace().next().unwrap_or("");
+                    let clean_exec = Path::new(first_word)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(first_word);
+                    if !clean_exec.is_empty() {
+                        exec = Some(clean_exec.to_string());
+                    }
+                }
+                "Icon" if icon_name.is_none() => icon_name = Some(val.to_string()),
+                "StartupWMClass" if startup_wm_class.is_none() => {
+                    startup_wm_class = Some(val.to_string())
+                }
+                "NoDisplay" => no_display = val.eq_ignore_ascii_case("true"),
+                _ => {}
+            }
+        }
+    }
+
+    if !is_application || no_display {
+        return None;
+    }
+
+    let final_name = name.unwrap_or_else(|| {
+        path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Application")
+            .to_string()
+    });
+
+    let icon_base64 = icon_name.and_then(|ic| resolve_linux_icon(&ic));
+
+    Some(DesktopMeta {
+        name: final_name,
+        exec,
+        startup_wm_class,
+        icon_base64,
+    })
+}
+
+/// Lists running applications matched against installed desktop entries and active processes.
 pub fn list_running_app_items(blacklist: &[String]) -> Result<Vec<AppItemInfo>> {
     let desktop_map = load_desktop_entries();
+    let current_uid = get_current_user_uid();
     let mut raw_apps: Vec<String> = Vec::new();
 
-    // Scan /proc for running user processes
     if let Ok(entries) = fs::read_dir("/proc") {
         for entry in entries.flatten() {
+            let path = entry.path();
             if let Ok(file_name) = entry.file_name().into_string() {
                 if file_name.chars().all(|c| c.is_ascii_digit()) {
-                    let comm_path = entry.path().join("comm");
-                    if let Ok(comm) = fs::read_to_string(comm_path) {
-                        let proc_name = comm.trim().to_string();
-                        if !proc_name.is_empty() && !is_platform_ignored_app(&proc_name) {
+                    if !is_process_owned_by_user(&path, current_uid) {
+                        continue;
+                    }
+
+                    if let Some(proc_name) = get_process_name_from_proc(&path) {
+                        if proc_name.is_empty() || is_platform_ignored_app(&proc_name) {
+                            continue;
+                        }
+
+                        let is_tracked = crate::tracker::is_app_blacklisted(&proc_name, "", blacklist);
+                        let is_desktop_app = find_desktop_meta(&desktop_map, &proc_name).is_some();
+
+                        if is_desktop_app || is_tracked {
                             raw_apps.push(proc_name);
                         }
                     }
@@ -384,7 +868,7 @@ pub fn list_running_app_items(blacklist: &[String]) -> Result<Vec<AppItemInfo>> 
 
     let mut result = Vec::new();
     for proc_name in raw_apps {
-        let (display_name, icon_base64) = if let Some(meta) = desktop_map.get(&proc_name.to_lowercase()) {
+        let (display_name, icon_base64) = if let Some(meta) = find_desktop_meta(&desktop_map, &proc_name) {
             (meta.name.clone(), meta.icon_base64.clone())
         } else {
             (get_friendly_app_name(&proc_name), None)
@@ -427,7 +911,7 @@ pub fn get_tracked_app_items(blacklist: &[String]) -> Result<Vec<AppItemInfo>> {
             continue;
         }
 
-        let (display_name, icon_base64) = if let Some(meta) = desktop_map.get(&clean.to_lowercase()) {
+        let (display_name, icon_base64) = if let Some(meta) = find_desktop_meta(&desktop_map, &clean) {
             (meta.name.clone(), meta.icon_base64.clone())
         } else {
             (get_friendly_app_name(&clean), None)
@@ -458,6 +942,7 @@ pub fn pick_app_file(blacklist: &[String], locale: &str) -> Result<Option<AppIte
         if let Some(file_name) = path_buf.file_name().and_then(|n| n.to_str()) {
             let mut app_name = file_name.to_string();
             let mut display_name = get_friendly_app_name(&app_name);
+            let mut icon_base64 = None;
 
             if app_name.ends_with(".desktop") {
                 if let Some(entry) = parse_desktop_file(&path_buf) {
@@ -465,6 +950,7 @@ pub fn pick_app_file(blacklist: &[String], locale: &str) -> Result<Option<AppIte
                         app_name = exec;
                     }
                     display_name = entry.name;
+                    icon_base64 = entry.icon_base64;
                 }
             }
 
@@ -480,7 +966,7 @@ pub fn pick_app_file(blacklist: &[String], locale: &str) -> Result<Option<AppIte
                 exe_name: app_name,
                 display_name,
                 window_title: String::new(),
-                icon_base64: None,
+                icon_base64,
                 is_tracked,
             }));
         }
@@ -490,111 +976,6 @@ pub fn pick_app_file(blacklist: &[String], locale: &str) -> Result<Option<AppIte
 }
 
 pub use pick_app_file as pick_exe_file;
-
-#[derive(Default, Clone)]
-struct DesktopMeta {
-    name: String,
-    exec: Option<String>,
-    icon_base64: Option<String>,
-}
-
-/// Indexes .desktop application entries from standard XDG data directories.
-fn load_desktop_entries() -> HashMap<String, DesktopMeta> {
-    let mut map = HashMap::new();
-    let mut search_dirs = vec![
-        PathBuf::from("/usr/share/applications"),
-        PathBuf::from("/usr/local/share/applications"),
-        PathBuf::from("/var/lib/flatpak/exports/share/applications"),
-    ];
-
-    if let Some(home) = dirs::home_dir() {
-        search_dirs.push(home.join(".local/share/applications"));
-    }
-
-    for dir in search_dirs {
-        if !dir.exists() {
-            continue;
-        }
-
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("desktop") {
-                    if let Some(meta) = parse_desktop_file(&path) {
-                        if let Some(ref exec) = meta.exec {
-                            map.insert(exec.to_lowercase(), meta.clone());
-                        }
-                        if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
-                            map.insert(file_stem.to_lowercase(), meta);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    map
-}
-
-/// Parses an individual .desktop file safely.
-fn parse_desktop_file(path: &Path) -> Option<DesktopMeta> {
-    let content = fs::read_to_string(path).ok()?;
-    let mut in_desktop_entry = false;
-    let mut name = None;
-    let mut exec = None;
-    let mut icon_name = None;
-    let mut no_display = false;
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed == "[Desktop Entry]" {
-            in_desktop_entry = true;
-            continue;
-        } else if trimmed.starts_with('[') && in_desktop_entry {
-            break;
-        }
-
-        if !in_desktop_entry {
-            continue;
-        }
-
-        if let Some((key, val)) = trimmed.split_once('=') {
-            match key.trim() {
-                "Name" if name.is_none() => name = Some(val.trim().to_string()),
-                "Exec" if exec.is_none() => {
-                    let first_word = val.split_whitespace().next().unwrap_or("");
-                    let clean_exec = Path::new(first_word)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(first_word);
-                    if !clean_exec.is_empty() {
-                        exec = Some(clean_exec.to_string());
-                    }
-                }
-                "Icon" if icon_name.is_none() => icon_name = Some(val.trim().to_string()),
-                "NoDisplay" => no_display = val.trim().eq_ignore_ascii_case("true"),
-                _ => {}
-            }
-        }
-    }
-
-    if no_display {
-        return None;
-    }
-
-    let final_name = name.unwrap_or_else(|| {
-        path.file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Application")
-            .to_string()
-    });
-
-    Some(DesktopMeta {
-        name: final_name,
-        exec,
-        icon_base64: None,
-    })
-}
 
 #[cfg(test)]
 mod tests {
@@ -636,6 +1017,24 @@ mod tests {
     #[test]
     fn test_linux_play_notification_sound_safe() {
         play_notification_sound();
+    }
+
+    #[test]
+    fn test_kwin_active_client_parsing() {
+        let sample = "Support Information:\nActive Client:\nresourceClass: \"google-chrome\"\nresourceName: \"google-chrome\"\ncaption: \"New Tab - Google Chrome\"\npid: 12345\nClient:\ncaption: \"Other\"\n";
+        let parsed = parse_kwin_active_client(sample);
+        assert!(parsed.is_some());
+        if let Some(info) = parsed {
+            assert_eq!(info.process_name, "google-chrome");
+            assert_eq!(info.window_title, "New Tab - Google Chrome");
+            assert_eq!(info.process_id, 12345);
+        }
+    }
+
+    #[test]
+    fn test_base64_encode_bytes() {
+        assert_eq!(base64_encode_bytes(b"hello"), "aGVsbG8=");
+        assert_eq!(base64_encode_bytes(b""), "");
     }
 }
 

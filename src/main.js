@@ -661,12 +661,27 @@ if (btnWinClose) {
   btnWinClose.addEventListener('click', handleWinClose);
 }
 if (customTitlebar) {
+  customTitlebar.addEventListener('mousedown', (e) => {
+    if (e.button === 0 && !e.target.closest('.win-btn') && !e.target.closest('button')) {
+      invoke('app_start_dragging').catch(() => {});
+    }
+  });
+
   customTitlebar.addEventListener('dblclick', (e) => {
-    if (!e.target.closest('.win-btn')) {
+    if (!e.target.closest('.win-btn') && !e.target.closest('button')) {
       handleWinToggleMaximize();
     }
   });
 }
+
+window.addEventListener('resize', () => {
+  const isMax = window.innerWidth >= (window.screen.availWidth - 10) && 
+                window.innerHeight >= (window.screen.availHeight - 40);
+  if (iconWinMaximize && iconWinRestore) {
+    iconWinMaximize.style.display = isMax ? 'none' : 'block';
+    iconWinRestore.style.display = isMax ? 'block' : 'none';
+  }
+});
 
 if (btnOpenGithub) {
   btnOpenGithub.addEventListener('click', async () => {

@@ -47,6 +47,11 @@ pub fn play_notification_sound() {
     }
 }
 
+/// Returns the primary notification icon path (Windows uses AUMID and embedded resources).
+pub fn get_notification_icon_path() -> Option<String> {
+    None
+}
+
 unsafe fn set_reg_dword(hkey: HKEY, name: &str, value: u32) {
     let name_wide: Vec<u16> = format!("{name}\0").encode_utf16().collect();
     let data = value.to_ne_bytes();

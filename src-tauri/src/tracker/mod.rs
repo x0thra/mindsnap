@@ -47,7 +47,12 @@ pub fn is_app_blacklisted(process_name: &str, window_title: &str, blacklist: &[S
             return true;
         }
 
-        // 3. Substring match inside window title (only for meaningful terms of at least 3 characters)
+        // 3. Common Linux packaging prefix/suffix match (e.g. "brave-browser" <=> "brave", "google-chrome-stable" <=> "google-chrome")
+        if proc_base.starts_with(&format!("{rule_base}-")) || rule_base.starts_with(&format!("{proc_base}-")) {
+            return true;
+        }
+
+        // 4. Substring match inside window title (only for meaningful terms of at least 3 characters)
         if rule_base.len() >= 3 && title_lower.contains(rule_base) {
             return true;
         }
@@ -263,6 +268,9 @@ pub async fn run_tracker_loop(
 pub fn send_notification(app_handle: &AppHandle, title: &str, body: &str, sound_enabled: bool) {
     let mut builder = app_handle.notification().builder();
     builder = builder.title(title).body(body);
+    if let Some(icon_path) = platform::get_notification_icon_path() {
+        builder = builder.icon(icon_path);
+    }
     if let Err(err) = builder.show() {
         eprintln!("Failed to display system notification: {:?}", err);
     }

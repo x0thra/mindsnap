@@ -18,6 +18,13 @@ use crate::tracker::state::TrackerStatus;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+    }
+
     let initial_config = AppConfig::load();
     let config_store = Arc::new(RwLock::new(initial_config.clone()));
     let status_store = Arc::new(RwLock::new(TrackerStatus::default()));
@@ -43,6 +50,7 @@ pub fn run() {
             commands::app_minimize,
             commands::app_toggle_maximize,
             commands::app_close,
+            commands::app_start_dragging,
             commands::get_app_version,
             commands::open_external_url,
             commands::resolve_locale,

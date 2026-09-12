@@ -164,14 +164,24 @@ pub async fn app_minimize(window: Window) -> Result<(), String> {
 /// Toggles between maximized and restored window states.
 #[tauri::command]
 pub async fn app_toggle_maximize(window: Window) -> Result<bool, String> {
-    let is_max = window.is_maximized().map_err(|e| e.to_string())?;
+    let is_max = window.is_maximized().unwrap_or(false);
     if is_max {
         window.unmaximize().map_err(|e| e.to_string())?;
+        #[cfg(target_os = "linux")]
+        {
+            let _ = window.set_size(tauri::LogicalSize::new(920.0, 660.0));
+        }
         Ok(false)
     } else {
         window.maximize().map_err(|e| e.to_string())?;
         Ok(true)
     }
+}
+
+/// Initiates native window dragging from custom titlebar regions.
+#[tauri::command]
+pub async fn app_start_dragging(window: Window) -> Result<(), String> {
+    window.start_dragging().map_err(|e| e.to_string())
 }
 
 /// Closes window (minimizing to tray if configured).
