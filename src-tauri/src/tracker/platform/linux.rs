@@ -5,13 +5,32 @@ use std::process::Command;
 use crate::error::Result;
 use crate::tracker::state::{ActiveAppInfo, AppItemInfo};
 
+/// Creates a `Command` configured to execute host system binaries safely from within an AppImage.
+///
+/// When running inside an AppImage, `AppRun` modifies `LD_LIBRARY_PATH` to point to bundled
+/// libraries. If host binaries (such as `gdbus`, `qdbus`, `hyprctl`, `xprop`, `busctl`) inherit
+/// this path, dynamic linker ABI mismatches (e.g. incompatible host GLib versions) cause them
+/// to fail or abort. This helper restores `LD_LIBRARY_PATH_ORIG` or unsets the bundled paths.
+pub fn clean_host_command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    let is_appimage = std::env::var_os("APPIMAGE").is_some() || std::env::var_os("APPDIR").is_some();
+    if is_appimage {
+        if let Some(orig) = std::env::var_os("LD_LIBRARY_PATH_ORIG") {
+            cmd.env("LD_LIBRARY_PATH", orig);
+        } else {
+            cmd.env_remove("LD_LIBRARY_PATH");
+        }
+    }
+    cmd
+}
+
 /// Plays the standard system notification sound on Linux environments.
 pub fn play_notification_sound() {
-    let _ = Command::new("canberra-gtk-play")
+    let _ = clean_host_command("canberra-gtk-play")
         .args(["-i", "message-new-instant"])
         .spawn()
         .or_else(|_| {
-            Command::new("paplay")
+            clean_host_command("paplay")
                 .arg("/usr/share/sounds/freedesktop/stereo/message.oga")
                 .spawn()
         });
@@ -111,13 +130,24 @@ pub fn is_platform_ignored_app(name: &str) -> bool {
         | "swaync"
         | "mako"
         | "dunst"
-        // XDG portals and desktop services
+        // Sandboxing infrastructure, package runners, and portals
+        | "flatpak"
+        | "flatpak-portal"
+        | "flatpak-session-helper"
+        | "flatpak-system-helper"
+        | "bwrap"
+        | "snapd"
+        | "snap-confine"
+        | "snapd-desktop-integration"
         | "xdg-desktop-portal"
         | "xdg-desktop-portal-gnome"
         | "xdg-desktop-portal-kde"
         | "xdg-desktop-portal-wlr"
         | "xdg-desktop-portal-hyprland"
         | "xdg-desktop-portal-gtk"
+        | "xdg-desktop-portal-cosmic"
+        | "xdg-desktop-portal-lxqt"
+        | "xdg-desktop-portal-termfilechooser"
         | "xdg-document-portal"
         | "xdg-permission-store"
         // Audio and session infrastructure
@@ -141,13 +171,43 @@ pub fn is_platform_ignored_app(name: &str) -> bool {
     }
 }
 
+/// Checks if a process or command name is a generic interpreter or runner that shouldn't represent a specific application.
+pub fn is_generic_runtime_prefix(s: &str) -> bool {
+    matches!(
+        s.trim().to_lowercase().as_str(),
+        "flatpak"
+            | "flatpak-portal"
+            | "flatpak-session-helper"
+            | "flatpak-system-helper"
+            | "bwrap"
+            | "snap"
+            | "snapd"
+            | "snap-confine"
+            | "env"
+            | "python"
+            | "python3"
+            | "node"
+            | "electron"
+            | "bash"
+            | "sh"
+            | "wine"
+            | "wine64"
+    )
+}
+
 /// Resolves popular Linux application names to user-friendly display titles.
 pub fn get_friendly_app_name(app_name: &str) -> String {
     let lower = app_name.trim().to_lowercase();
     let clean = lower.strip_suffix(".desktop").unwrap_or(&lower);
     let clean = clean.strip_suffix(".exe").unwrap_or(clean);
 
-    match clean {
+    let target = if clean.contains('.') {
+        clean.split('.').next_back().unwrap_or(clean)
+    } else {
+        clean
+    };
+
+    match target {
         "google-chrome" | "google-chrome-stable" => "Google Chrome".to_string(),
         "chromium" | "chromium-browser" => "Chromium".to_string(),
         "firefox" | "firefox-esr" | "firefox-bin" => "Mozilla Firefox".to_string(),
@@ -168,7 +228,7 @@ pub fn get_friendly_app_name(app_name: &str) -> String {
         "lutris" => "Lutris".to_string(),
         "heroic" => "Heroic Games Launcher".to_string(),
         _ => {
-            let words: Vec<String> = clean
+            let words: Vec<String> = target
                 .split(['_', '-', ' '])
                 .filter(|w| !w.is_empty())
                 .map(|w| {
@@ -181,7 +241,7 @@ pub fn get_friendly_app_name(app_name: &str) -> String {
                 .collect();
 
             if words.is_empty() {
-                clean.to_string()
+                target.to_string()
             } else {
                 words.join(" ")
             }
@@ -254,7 +314,7 @@ pub fn get_active_window() -> Result<Option<ActiveAppInfo>> {
 
 /// Hyprland `hyprctl activewindow -j` query.
 fn get_active_window_hyprland() -> Option<ActiveAppInfo> {
-    let output = Command::new("hyprctl")
+    let output = clean_host_command("hyprctl")
         .args(["activewindow", "-j"])
         .output()
         .ok()?;
@@ -283,7 +343,7 @@ fn get_active_window_hyprland() -> Option<ActiveAppInfo> {
 
 /// Queries focused window node via Sway IPC (`swaymsg -t get_tree`).
 fn get_active_window_sway() -> Option<ActiveAppInfo> {
-    let output = Command::new("swaymsg")
+    let output = clean_host_command("swaymsg")
         .args(["-t", "get_tree"])
         .output()
         .ok()?;
@@ -343,7 +403,7 @@ fn find_focused_sway_node(node: &serde_json::Value) -> Option<ActiveAppInfo> {
 
 /// Queries active window on KDE Plasma via KWin D-Bus supportInformation.
 fn get_active_window_kwin() -> Option<ActiveAppInfo> {
-    let output = Command::new("gdbus")
+    let output = clean_host_command("gdbus")
         .args([
             "call",
             "--session",
@@ -356,8 +416,20 @@ fn get_active_window_kwin() -> Option<ActiveAppInfo> {
         ])
         .output()
         .or_else(|_| {
-            Command::new("qdbus")
+            clean_host_command("qdbus")
                 .args(["org.kde.KWin", "/KWin", "supportInformation"])
+                .output()
+        })
+        .or_else(|_| {
+            clean_host_command("busctl")
+                .args([
+                    "--user",
+                    "call",
+                    "org.kde.KWin",
+                    "/KWin",
+                    "org.kde.KWin",
+                    "supportInformation",
+                ])
                 .output()
         })
         .ok()?;
@@ -436,8 +508,8 @@ pub fn parse_kwin_active_client(text: &str) -> Option<ActiveAppInfo> {
 
 /// Queries active window on GNOME Shell via D-Bus Introspect or Eval.
 fn get_active_window_gnome() -> Option<ActiveAppInfo> {
-    // 1. Try org.gnome.Shell.Introspect (GNOME 3.36+ / GNOME 40-47)
-    if let Ok(output) = Command::new("gdbus")
+    // 1. Try org.gnome.Shell.Introspect via gdbus (GNOME 3.36+ / GNOME 40-47)
+    if let Ok(output) = clean_host_command("gdbus")
         .args([
             "call",
             "--session",
@@ -458,8 +530,28 @@ fn get_active_window_gnome() -> Option<ActiveAppInfo> {
         }
     }
 
-    // 2. Fallback to org.gnome.Shell.Eval if enabled
-    if let Ok(output) = Command::new("gdbus")
+    // 2. Fallback to busctl for org.gnome.Shell.Introspect
+    if let Ok(output) = clean_host_command("busctl")
+        .args([
+            "--user",
+            "call",
+            "org.gnome.Shell.Introspect",
+            "/org/gnome/Shell/Introspect",
+            "org.gnome.Shell.Introspect",
+            "GetWindows",
+        ])
+        .output()
+    {
+        if output.status.success() {
+            let out_str = String::from_utf8_lossy(&output.stdout);
+            if let Some(info) = parse_gnome_introspect_windows(&out_str) {
+                return Some(info);
+            }
+        }
+    }
+
+    // 3. Fallback to org.gnome.Shell.Eval if enabled
+    if let Ok(output) = clean_host_command("gdbus")
         .args([
             "call",
             "--session",
@@ -500,19 +592,20 @@ fn get_active_window_gnome() -> Option<ActiveAppInfo> {
 
 /// Parses active focused window from GNOME Shell Introspect GetWindows output.
 pub fn parse_gnome_introspect_windows(text: &str) -> Option<ActiveAppInfo> {
-    if !text.contains("has-focus") || !text.contains("<true>") {
+    if !text.contains("has-focus") || (!text.contains("<true>") && !text.contains("true")) {
         return None;
     }
 
     for chunk in text.split('}') {
-        if chunk.contains("has-focus") && chunk.contains("<true>") {
+        let has_focus = chunk.contains("has-focus") && (chunk.contains("<true>") || chunk.contains("true"));
+        if has_focus {
             let mut app_id = String::new();
             let mut wm_class = String::new();
             let mut title = String::new();
 
             if let Some(pos) = chunk.find("app-id") {
                 if let Some(sub) = chunk.get(pos..) {
-                    if let Some(val) = extract_gvariant_string(sub) {
+                    if let Some(val) = extract_gvariant_or_quoted_string(sub) {
                         app_id = val;
                     }
                 }
@@ -520,7 +613,7 @@ pub fn parse_gnome_introspect_windows(text: &str) -> Option<ActiveAppInfo> {
 
             if let Some(pos) = chunk.find("wm-class") {
                 if let Some(sub) = chunk.get(pos..) {
-                    if let Some(val) = extract_gvariant_string(sub) {
+                    if let Some(val) = extract_gvariant_or_quoted_string(sub) {
                         wm_class = val;
                     }
                 }
@@ -528,7 +621,7 @@ pub fn parse_gnome_introspect_windows(text: &str) -> Option<ActiveAppInfo> {
 
             if let Some(pos) = chunk.find("title") {
                 if let Some(sub) = chunk.get(pos..) {
-                    if let Some(val) = extract_gvariant_string(sub) {
+                    if let Some(val) = extract_gvariant_or_quoted_string(sub) {
                         title = val;
                     }
                 }
@@ -564,10 +657,27 @@ fn extract_gvariant_string(text: &str) -> Option<String> {
     Some(remainder[..end_quote].to_string())
 }
 
+fn extract_gvariant_or_quoted_string(text: &str) -> Option<String> {
+    if let Some(val) = extract_gvariant_string(text) {
+        return Some(val);
+    }
+    if let Some(first) = text.find('\'') {
+        if let Some(second) = text[first + 1..].find('\'') {
+            return Some(text[first + 1..first + 1 + second].to_string());
+        }
+    }
+    if let Some(first) = text.find('"') {
+        if let Some(second) = text[first + 1..].find('"') {
+            return Some(text[first + 1..first + 1 + second].to_string());
+        }
+    }
+    None
+}
+
 /// Queries active window via standard X11 / Xwayland utilities (xprop or xdotool).
 fn get_active_window_x11() -> Option<ActiveAppInfo> {
     // 1. Try xprop -root _NET_ACTIVE_WINDOW (standard across all X11/Xwayland sessions)
-    if let Ok(output) = Command::new("xprop").args(["-root", "_NET_ACTIVE_WINDOW"]).output() {
+    if let Ok(output) = clean_host_command("xprop").args(["-root", "_NET_ACTIVE_WINDOW"]).output() {
         if output.status.success() {
             let out_str = String::from_utf8_lossy(&output.stdout);
             if let Some(win_id) = out_str.split('#').nth(1).map(|s| s.trim()) {
@@ -581,7 +691,7 @@ fn get_active_window_x11() -> Option<ActiveAppInfo> {
     }
 
     // 2. Fallback to xdotool if available
-    if let Ok(output) = Command::new("xdotool").args(["getactivewindow"]).output() {
+    if let Ok(output) = clean_host_command("xdotool").args(["getactivewindow"]).output() {
         if output.status.success() {
             let win_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !win_id.is_empty() && win_id != "0" {
@@ -596,7 +706,7 @@ fn get_active_window_x11() -> Option<ActiveAppInfo> {
 }
 
 fn get_x11_window_info_by_id(win_id: &str) -> Option<ActiveAppInfo> {
-    let output = Command::new("xprop")
+    let output = clean_host_command("xprop")
         .args(["-id", win_id, "WM_CLASS", "_NET_WM_NAME", "_NET_WM_PID"])
         .output()
         .ok()?;
@@ -654,14 +764,60 @@ fn get_process_comm_by_pid(pid: u32) -> Option<String> {
     fs::read_to_string(path).ok().map(|s| s.trim().to_string())
 }
 
-/// Reads non-truncated process name from /proc/[pid]/cmdline or falls back to comm.
+/// Inspects /proc/[pid]/environ and /proc/[pid]/root/.flatpak-info to identify sandboxed Flatpak or Snap applications.
+fn get_sandboxed_app_id(pid_dir: &Path) -> Option<String> {
+    // 1. Check /proc/[pid]/environ for FLATPAK_ID= or SNAP_NAME=
+    if let Ok(environ_bytes) = fs::read(pid_dir.join("environ")) {
+        for chunk in environ_bytes.split(|&b| b == 0) {
+            if let Ok(s) = std::str::from_utf8(chunk) {
+                if let Some(id) = s.strip_prefix("FLATPAK_ID=") {
+                    let clean = id.trim();
+                    if !clean.is_empty() {
+                        return Some(clean.to_string());
+                    }
+                }
+                if let Some(snap) = s.strip_prefix("SNAP_NAME=") {
+                    let clean = snap.trim();
+                    if !clean.is_empty() {
+                        return Some(clean.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Check /.flatpak-info inside /proc/[pid]/root/ if accessible
+    let flatpak_info = pid_dir.join("root/.flatpak-info");
+    if flatpak_info.is_file() {
+        if let Ok(content) = fs::read_to_string(flatpak_info) {
+            for line in content.lines() {
+                if let Some(rest) = line.trim().strip_prefix("name=") {
+                    let clean = rest.trim();
+                    if !clean.is_empty() {
+                        return Some(clean.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Reads non-truncated process name from sandboxed metadata, /proc/[pid]/cmdline, or falls back to comm.
 fn get_process_name_from_proc(pid_dir: &Path) -> Option<String> {
+    // 1. Prefer sandboxed Flatpak / Snap identity if running in an isolated environment
+    if let Some(sandboxed_id) = get_sandboxed_app_id(pid_dir) {
+        return Some(sandboxed_id);
+    }
+
+    // 2. Read from /proc/[pid]/cmdline
     if let Ok(cmdline_bytes) = fs::read(pid_dir.join("cmdline")) {
         if let Some(first_null) = cmdline_bytes.iter().position(|&b| b == 0) {
             let arg0 = String::from_utf8_lossy(&cmdline_bytes[..first_null]);
             if let Some(name) = Path::new(arg0.as_ref()).file_name().and_then(|n| n.to_str()) {
                 let trimmed = name.trim();
-                if !trimmed.is_empty() {
+                if !trimmed.is_empty() && !is_generic_runtime_prefix(trimmed) {
                     return Some(trimmed.to_string());
                 }
             }
@@ -837,12 +993,81 @@ fn resolve_linux_icon(icon_name: &str) -> Option<String> {
     None
 }
 
-#[derive(Default, Clone)]
-struct DesktopMeta {
-    name: String,
-    exec: Option<String>,
-    startup_wm_class: Option<String>,
-    icon_base64: Option<String>,
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
+pub struct DesktopMeta {
+    pub name: String,
+    pub exec: Option<String>,
+    pub flatpak_id: Option<String>,
+    pub startup_wm_class: Option<String>,
+    pub icon_base64: Option<String>,
+}
+
+/// Safely extracts application target names from .desktop Exec lines,
+/// properly extracting Flatpak IDs, Snap binaries, env wrappers, and native executables.
+pub fn extract_exec_metadata(exec_val: &str) -> (Option<String>, Option<String>) {
+    // Returns (exec_target, flatpak_id)
+    let tokens: Vec<&str> = exec_val.split_whitespace().collect();
+    if tokens.is_empty() {
+        return (None, None);
+    }
+
+    let mut iter = tokens.into_iter();
+    let mut current = iter.next().unwrap_or("");
+
+    // Strip `env` wrapper and variable assignments: e.g. `env BAMF_... /snap/bin/foo`
+    if current.eq_ignore_ascii_case("env") {
+        for tok in iter.by_ref() {
+            if !tok.contains('=') {
+                current = tok;
+                break;
+            }
+        }
+    }
+
+    let current_base = Path::new(current)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(current);
+
+    // Flatpak launcher: `flatpak run [...] <app_id>`
+    if current_base.eq_ignore_ascii_case("flatpak") {
+        let mut flatpak_id = None;
+        let mut command_val = None;
+
+        for tok in iter {
+            if tok.eq_ignore_ascii_case("run") {
+                continue;
+            }
+            if let Some(cmd) = tok.strip_prefix("--command=") {
+                let clean_cmd = cmd.trim_matches('"').trim_matches('\'');
+                if !clean_cmd.is_empty() {
+                    command_val = Some(clean_cmd.to_string());
+                }
+                continue;
+            }
+            if tok.starts_with('-') {
+                continue;
+            }
+            if flatpak_id.is_none() {
+                flatpak_id = Some(tok.trim_matches('"').trim_matches('\'').to_string());
+            }
+        }
+
+        let exec = command_val.or_else(|| {
+            flatpak_id
+                .as_ref()
+                .and_then(|id| id.split('.').next_back().map(|s| s.to_string()))
+        });
+
+        return (exec, flatpak_id);
+    }
+
+    // Standard native or snap executable path
+    if !current_base.is_empty() && !is_generic_runtime_prefix(current_base) {
+        return (Some(current_base.to_string()), None);
+    }
+
+    (None, None)
 }
 
 /// Indexes .desktop application entries from standard XDG data directories.
@@ -871,13 +1096,32 @@ fn load_desktop_entries() -> HashMap<String, DesktopMeta> {
                 if path.extension().and_then(|e| e.to_str()) == Some("desktop") {
                     if let Some(meta) = parse_desktop_file(&path) {
                         if let Some(ref exec) = meta.exec {
-                            map.insert(exec.to_lowercase(), meta.clone());
+                            if !is_generic_runtime_prefix(exec) {
+                                map.insert(exec.to_lowercase(), meta.clone());
+                            }
+                        }
+                        if let Some(ref flatpak_id) = meta.flatpak_id {
+                            map.insert(flatpak_id.to_lowercase(), meta.clone());
+                            let segments: Vec<&str> = flatpak_id.split('.').collect();
+                            for seg in segments.iter().rev() {
+                                if !crate::tracker::is_generic_reverse_dns_segment(seg)
+                                    && !is_generic_runtime_prefix(seg)
+                                    && seg.len() >= 3
+                                {
+                                    map.entry(seg.to_lowercase()).or_insert_with(|| meta.clone());
+                                    break;
+                                }
+                            }
                         }
                         if let Some(ref wm_class) = meta.startup_wm_class {
-                            map.insert(wm_class.to_lowercase(), meta.clone());
+                            if !is_generic_runtime_prefix(wm_class) {
+                                map.insert(wm_class.to_lowercase(), meta.clone());
+                            }
                         }
                         if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
-                            map.insert(file_stem.to_lowercase(), meta);
+                            if !is_generic_runtime_prefix(file_stem) {
+                                map.insert(file_stem.to_lowercase(), meta);
+                            }
                         }
                     }
                 }
@@ -897,21 +1141,49 @@ fn find_desktop_meta<'a>(
     let clean = lower.strip_suffix(".desktop").unwrap_or(&lower);
     let clean = clean.strip_suffix(".exe").unwrap_or(clean);
 
+    // 1. Direct match
     if let Some(meta) = map.get(clean) {
         return Some(meta);
     }
 
-    for (key, meta) in map {
-        if key == clean
-            || key.starts_with(&format!("{clean}-"))
-            || clean.starts_with(&format!("{key}-"))
-            || (meta
-                .startup_wm_class
-                .as_deref()
-                .map(|c| c.eq_ignore_ascii_case(clean))
-                .unwrap_or(false))
-        {
-            return Some(meta);
+    // 2. If app_name is reverse-DNS (e.g. dev.geopjr.tuba), try candidate non-generic segment
+    if clean.contains('.') {
+        let segments: Vec<&str> = clean.split('.').collect();
+        for seg in segments.iter().rev() {
+            if !crate::tracker::is_generic_reverse_dns_segment(seg)
+                && !is_generic_runtime_prefix(seg)
+                && seg.len() >= 3
+            {
+                if let Some(meta) = map.get(*seg) {
+                    return Some(meta);
+                }
+                break;
+            }
+        }
+    }
+
+    // 3. Match against startup_wm_class, flatpak_id, or reverse-DNS equivalence
+    for meta in map.values() {
+        if let Some(ref wm) = meta.startup_wm_class {
+            if wm.eq_ignore_ascii_case(clean) {
+                return Some(meta);
+            }
+        }
+        if let Some(ref fid) = meta.flatpak_id {
+            if fid.eq_ignore_ascii_case(clean) || crate::tracker::matches_reverse_dns(fid, clean) {
+                return Some(meta);
+            }
+        }
+    }
+
+    // 4. Safe prefix match (only for specific app names of at least 4 chars, NEVER generic terms)
+    if clean.len() >= 4 && !is_generic_runtime_prefix(clean) {
+        for (key, meta) in map {
+            if !is_generic_runtime_prefix(key)
+                && (key.starts_with(&format!("{clean}-")) || clean.starts_with(&format!("{key}-")))
+            {
+                return Some(meta);
+            }
         }
     }
 
@@ -919,11 +1191,12 @@ fn find_desktop_meta<'a>(
 }
 
 /// Parses an individual .desktop file safely.
-fn parse_desktop_file(path: &Path) -> Option<DesktopMeta> {
+pub fn parse_desktop_file(path: &Path) -> Option<DesktopMeta> {
     let content = fs::read_to_string(path).ok()?;
     let mut in_desktop_entry = false;
     let mut name = None;
     let mut exec = None;
+    let mut flatpak_id = None;
     let mut icon_name = None;
     let mut startup_wm_class = None;
     let mut no_display = false;
@@ -953,13 +1226,10 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopMeta> {
                 }
                 "Name" if name.is_none() => name = Some(val.to_string()),
                 "Exec" if exec.is_none() => {
-                    let first_word = val.split_whitespace().next().unwrap_or("");
-                    let clean_exec = Path::new(first_word)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(first_word);
-                    if !clean_exec.is_empty() {
-                        exec = Some(clean_exec.to_string());
+                    let (parsed_exec, parsed_fid) = extract_exec_metadata(val);
+                    exec = parsed_exec;
+                    if flatpak_id.is_none() {
+                        flatpak_id = parsed_fid;
                     }
                 }
                 "Icon" if icon_name.is_none() => icon_name = Some(val.to_string()),
@@ -976,11 +1246,17 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopMeta> {
         return None;
     }
 
+    let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    if flatpak_id.is_none() && file_stem.contains('.') {
+        flatpak_id = Some(file_stem.to_string());
+    }
+
     let final_name = name.unwrap_or_else(|| {
-        path.file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Application")
-            .to_string()
+        if !file_stem.is_empty() {
+            file_stem.to_string()
+        } else {
+            "Application".to_string()
+        }
     });
 
     let icon_base64 = icon_name.and_then(|ic| resolve_linux_icon(&ic));
@@ -988,6 +1264,7 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopMeta> {
     Some(DesktopMeta {
         name: final_name,
         exec,
+        flatpak_id,
         startup_wm_class,
         icon_base64,
     })
@@ -1047,19 +1324,72 @@ pub fn list_running_app_items(blacklist: &[String]) -> Result<Vec<AppItemInfo>> 
         });
     }
 
-    Ok(result)
+    let mut unique_results: Vec<AppItemInfo> = Vec::new();
+    for item in result {
+        if let Some(existing) = unique_results.iter_mut().find(|x| {
+            x.display_name.eq_ignore_ascii_case(&item.display_name)
+                && (x.exe_name.eq_ignore_ascii_case(&item.exe_name)
+                    || crate::tracker::matches_reverse_dns(&x.exe_name, &item.exe_name))
+        }) {
+            if existing.icon_base64.is_none() && item.icon_base64.is_some() {
+                existing.icon_base64 = item.icon_base64;
+            }
+            if item.exe_name.contains('.') && !existing.exe_name.contains('.') {
+                existing.exe_name = item.exe_name;
+            }
+            existing.is_tracked = existing.is_tracked || item.is_tracked;
+        } else {
+            unique_results.push(item);
+        }
+    }
+
+    Ok(unique_results)
 }
 
 pub fn list_running_windows() -> Result<Vec<ActiveAppInfo>> {
+    let desktop_map = load_desktop_entries();
     let items = list_running_app_items(&[])?;
-    Ok(items
-        .into_iter()
-        .map(|item| ActiveAppInfo {
-            process_name: item.exe_name,
-            window_title: item.window_title,
+    let mut result = Vec::new();
+
+    for item in items {
+        result.push(ActiveAppInfo {
+            process_name: item.exe_name.clone(),
+            window_title: item.window_title.clone(),
             process_id: 0,
-        })
-        .collect())
+        });
+
+        if let Some(meta) = find_desktop_meta(&desktop_map, &item.exe_name) {
+            if let Some(ref exec) = meta.exec {
+                if !exec.eq_ignore_ascii_case(&item.exe_name) {
+                    result.push(ActiveAppInfo {
+                        process_name: exec.clone(),
+                        window_title: item.window_title.clone(),
+                        process_id: 0,
+                    });
+                }
+            }
+            if let Some(ref fid) = meta.flatpak_id {
+                if !fid.eq_ignore_ascii_case(&item.exe_name) {
+                    result.push(ActiveAppInfo {
+                        process_name: fid.clone(),
+                        window_title: item.window_title.clone(),
+                        process_id: 0,
+                    });
+                }
+            }
+            if let Some(ref wm) = meta.startup_wm_class {
+                if !wm.eq_ignore_ascii_case(&item.exe_name) {
+                    result.push(ActiveAppInfo {
+                        process_name: wm.clone(),
+                        window_title: item.window_title.clone(),
+                        process_id: 0,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(result)
 }
 
 /// Generates rich display items for blacklisted Linux applications.
@@ -1108,7 +1438,9 @@ pub fn pick_app_file(blacklist: &[String], locale: &str) -> Result<Option<AppIte
 
             if app_name.ends_with(".desktop") {
                 if let Some(entry) = parse_desktop_file(&path_buf) {
-                    if let Some(exec) = entry.exec {
+                    if let Some(fid) = entry.flatpak_id {
+                        app_name = fid;
+                    } else if let Some(exec) = entry.exec {
                         app_name = exec;
                     }
                     display_name = entry.name;
@@ -1224,5 +1556,61 @@ mod tests {
                 | LinuxSessionBackend::Unknown
         ));
     }
+
+    #[test]
+    fn test_extract_exec_metadata() {
+        let line1 = "/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=tuba dev.geopjr.Tuba";
+        let (exec1, fid1) = extract_exec_metadata(line1);
+        assert_eq!(exec1, Some("tuba".to_string()));
+        assert_eq!(fid1, Some("dev.geopjr.Tuba".to_string()));
+
+        let line2 = "flatpak run org.mozilla.firefox %u";
+        let (exec2, fid2) = extract_exec_metadata(line2);
+        assert_eq!(exec2, Some("firefox".to_string()));
+        assert_eq!(fid2, Some("org.mozilla.firefox".to_string()));
+
+        let line3 = "env BAMF_DESKTOP_FILE_HINT=/var/lib/snapd/desktop/applications/spotify_spotify.desktop /snap/bin/spotify %U";
+        let (exec3, fid3) = extract_exec_metadata(line3);
+        assert_eq!(exec3, Some("spotify".to_string()));
+        assert_eq!(fid3, None);
+
+        let line4 = "/usr/bin/google-chrome-stable %U";
+        let (exec4, fid4) = extract_exec_metadata(line4);
+        assert_eq!(exec4, Some("google-chrome-stable".to_string()));
+        assert_eq!(fid4, None);
+    }
+
+    #[test]
+    fn test_is_generic_runtime_prefix() {
+        assert!(is_generic_runtime_prefix("flatpak"));
+        assert!(is_generic_runtime_prefix("flatpak-portal"));
+        assert!(is_generic_runtime_prefix("flatpak-session-helper"));
+        assert!(is_generic_runtime_prefix("bwrap"));
+        assert!(is_generic_runtime_prefix("snapd"));
+        assert!(is_generic_runtime_prefix("env"));
+        assert!(!is_generic_runtime_prefix("tuba"));
+        assert!(!is_generic_runtime_prefix("spotify"));
+        assert!(!is_generic_runtime_prefix("discord"));
+    }
+
+    #[test]
+    fn test_find_desktop_meta_with_flatpak() {
+        let mut map = HashMap::new();
+        let meta = DesktopMeta {
+            name: "Tuba".to_string(),
+            exec: Some("tuba".to_string()),
+            flatpak_id: Some("dev.geopjr.Tuba".to_string()),
+            startup_wm_class: Some("dev.geopjr.Tuba".to_string()),
+            icon_base64: None,
+        };
+        map.insert("dev.geopjr.tuba".to_string(), meta.clone());
+        map.insert("tuba".to_string(), meta.clone());
+
+        assert!(find_desktop_meta(&map, "dev.geopjr.Tuba").is_some());
+        assert!(find_desktop_meta(&map, "tuba").is_some());
+        assert_eq!(find_desktop_meta(&map, "dev.geopjr.Tuba").map(|m| m.name.as_str()), Some("Tuba"));
+        assert_eq!(find_desktop_meta(&map, "tuba").map(|m| m.name.as_str()), Some("Tuba"));
+    }
 }
+
 

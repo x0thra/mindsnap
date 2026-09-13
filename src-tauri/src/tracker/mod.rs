@@ -16,6 +16,82 @@ pub fn is_system_or_ignored_app(exe_name: &str) -> bool {
     platform::is_platform_ignored_app(exe_name)
 }
 
+/// Checks if a reverse-DNS domain segment is generic (e.g. TLD, organization type, or role suffix).
+pub fn is_generic_reverse_dns_segment(s: &str) -> bool {
+    matches!(
+        s.to_ascii_lowercase().as_str(),
+        "com"
+            | "org"
+            | "net"
+            | "io"
+            | "dev"
+            | "im"
+            | "app"
+            | "apps"
+            | "client"
+            | "browser"
+            | "desktop"
+            | "application"
+            | "launcher"
+            | "ui"
+            | "gui"
+            | "main"
+            | "bin"
+            | "standalone"
+            | "linux"
+    )
+}
+
+/// Checks if a candidate process string and a rule string match across reverse-DNS naming conventions.
+/// For example: "dev.geopjr.Tuba" <=> "tuba", "com.spotify.Client" <=> "spotify", "org.gnome.Nautilus" <=> "nautilus".
+pub fn matches_reverse_dns(a: &str, b: &str) -> bool {
+    let a_clean = a.trim().to_lowercase();
+    let b_clean = b.trim().to_lowercase();
+
+    if a_clean == b_clean {
+        return true;
+    }
+
+    let (rdns, other) = if a_clean.contains('.') && !b_clean.contains('.') {
+        (a_clean.as_str(), b_clean.as_str())
+    } else if b_clean.contains('.') && !a_clean.contains('.') {
+        (b_clean.as_str(), a_clean.as_str())
+    } else {
+        return false;
+    };
+
+    let segments: Vec<&str> = rdns.split('.').collect();
+    if segments.is_empty() {
+        return false;
+    }
+
+    for seg in segments.iter().rev() {
+        if !is_generic_reverse_dns_segment(seg) {
+            let norm_seg = seg.replace('_', "-");
+            let norm_other = other.replace('_', "-");
+            if norm_seg == norm_other
+                || norm_seg.starts_with(&format!("{norm_other}-"))
+                || norm_other.starts_with(&format!("{norm_seg}-"))
+            {
+                return true;
+            }
+            break;
+        }
+    }
+
+    for seg in &segments {
+        if !is_generic_reverse_dns_segment(seg) && seg.len() >= 3 {
+            let norm_seg = seg.replace('_', "-");
+            let norm_other = other.replace('_', "-");
+            if norm_seg == norm_other {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 /// Checks whether an application is blacklisted (cross-platform matching).
 pub fn is_app_blacklisted(process_name: &str, window_title: &str, blacklist: &[String]) -> bool {
     // Internal system tools and Mindsnap itself are never blacklisted
@@ -47,13 +123,58 @@ pub fn is_app_blacklisted(process_name: &str, window_title: &str, blacklist: &[S
             return true;
         }
 
-        // 3. Common Linux packaging prefix/suffix match (e.g. "brave-browser" <=> "brave", "google-chrome-stable" <=> "google-chrome")
-        if proc_base.starts_with(&format!("{rule_base}-")) || rule_base.starts_with(&format!("{proc_base}-")) {
+        // 3. Common packaging prefix/suffix and separator match (e.g. "brave-browser" <=> "brave", "google_chrome" <=> "google-chrome")
+        let norm_proc = proc_base.replace('_', "-");
+        let norm_rule = rule_base.replace('_', "-");
+        if norm_proc == norm_rule
+            || norm_proc.starts_with(&format!("{norm_rule}-"))
+            || norm_rule.starts_with(&format!("{norm_proc}-"))
+        {
             return true;
         }
 
-        // 4. Substring match inside window title (only for meaningful terms of at least 3 characters)
+        // 4. Reverse-DNS application ID match (e.g. "dev.geopjr.Tuba" <=> "tuba", "com.spotify.Client" <=> "spotify")
+        if matches_reverse_dns(proc_base, rule_base) {
+            return true;
+        }
+
+        // 5. Substring match inside window title (only for meaningful terms of at least 3 characters)
         if rule_base.len() >= 3 && title_lower.contains(rule_base) {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Determines whether an active session key matches any process currently known to be running.
+fn is_any_running_alias(key: &str, running_set: &HashSet<String>) -> bool {
+    let key_clean = key.trim().to_lowercase();
+    let key_base = key_clean.strip_suffix(".exe").unwrap_or(&key_clean);
+    let key_base = key_base.strip_suffix(".desktop").unwrap_or(key_base);
+
+    if running_set.contains(key_clean.as_str()) || running_set.contains(key_base) {
+        return true;
+    }
+
+    for running in running_set {
+        let running_base = running.strip_suffix(".exe").unwrap_or(running);
+        let running_base = running_base.strip_suffix(".desktop").unwrap_or(running_base);
+
+        if key_base == running_base {
+            return true;
+        }
+
+        let norm_key = key_base.replace('_', "-");
+        let norm_run = running_base.replace('_', "-");
+        if norm_key == norm_run
+            || norm_key.starts_with(&format!("{norm_run}-"))
+            || norm_run.starts_with(&format!("{norm_key}-"))
+        {
+            return true;
+        }
+
+        if matches_reverse_dns(key_base, running_base) {
             return true;
         }
     }
@@ -94,18 +215,25 @@ pub async fn run_tracker_loop(
                     .collect();
 
                 sessions.retain(|k, v| {
-                    let key_base = k.strip_suffix(".exe").unwrap_or(k);
-                    let is_running = running_set.contains(key_base) || running_set.contains(k);
                     let is_still_blacklisted = is_app_blacklisted(&v.app_name, "", &config.blacklisted_apps);
-                    is_running && is_still_blacklisted
+                    if !is_still_blacklisted {
+                        return false;
+                    }
+
+                    // Never prune the currently focused tracked session while it is actively in foreground
+                    if let Some(ref active) = last_tracked_app {
+                        let active_key = active.process_name.trim().to_lowercase();
+                        if k.eq_ignore_ascii_case(&active_key) || matches_reverse_dns(k, &active_key) {
+                            return true;
+                        }
+                    }
+
+                    is_any_running_alias(k, &running_set)
                 });
 
                 if let Some(ref tracked) = last_tracked_app {
-                    let key = tracked.process_name.trim().to_lowercase();
-                    let key_base = key.strip_suffix(".exe").unwrap_or(&key);
-                    let is_running = running_set.contains(key_base) || running_set.contains(&key);
                     let is_still_blacklisted = is_app_blacklisted(&tracked.process_name, "", &config.blacklisted_apps);
-                    if !is_running || !is_still_blacklisted {
+                    if !is_still_blacklisted {
                         last_tracked_app = None;
                     }
                 }
@@ -311,6 +439,13 @@ mod tests {
         assert!(is_app_blacklisted("discord.exe", "Discord", &["discord".to_string()]));
         assert!(is_app_blacklisted("spotify", "Spotify", &["spotify.desktop".to_string()]));
 
+        // Reverse-DNS flatpak matching
+        assert!(is_app_blacklisted("dev.geopjr.Tuba", "Tuba", &["tuba".to_string()]));
+        assert!(is_app_blacklisted("tuba", "Tuba", &["dev.geopjr.Tuba".to_string()]));
+        assert!(is_app_blacklisted("com.spotify.Client", "Spotify", &["spotify".to_string()]));
+        assert!(is_app_blacklisted("org.gnome.Nautilus", "Files", &["nautilus".to_string()]));
+        assert!(is_app_blacklisted("org.telegram.desktop", "Telegram", &["telegram".to_string()]));
+
         // System applications and Mindsnap itself are never blocked even if blacklisted
         let dangerous_blacklist = vec![
             "mindsnap.exe".to_string(),
@@ -320,6 +455,41 @@ mod tests {
         assert!(!is_app_blacklisted("mindsnap.exe", "Mindsnap", &dangerous_blacklist));
         assert!(!is_app_blacklisted("explorer.exe", "Windows Explorer", &dangerous_blacklist));
         assert!(!is_app_blacklisted("msedgewebview2.exe", "WebView2", &dangerous_blacklist));
+    }
+
+    #[test]
+    fn test_matches_reverse_dns() {
+        assert!(matches_reverse_dns("dev.geopjr.Tuba", "tuba"));
+        assert!(matches_reverse_dns("tuba", "dev.geopjr.Tuba"));
+        assert!(matches_reverse_dns("com.spotify.Client", "spotify"));
+        assert!(matches_reverse_dns("spotify", "com.spotify.Client"));
+        assert!(matches_reverse_dns("org.gnome.Nautilus", "nautilus"));
+        assert!(matches_reverse_dns("nautilus", "org.gnome.Nautilus"));
+        assert!(matches_reverse_dns("org.telegram.desktop", "telegram"));
+        assert!(matches_reverse_dns("org.telegram.desktop", "telegram-desktop"));
+        assert!(matches_reverse_dns("com.valvesoftware.Steam", "steam"));
+
+        // Negative assertions
+        assert!(!matches_reverse_dns("google-chrome", "dev.geopjr.Tuba"));
+        assert!(!matches_reverse_dns("firefox", "com.spotify.Client"));
+    }
+
+    #[test]
+    fn test_is_any_running_alias() {
+        let running_set: HashSet<String> = [
+            "tuba".to_string(),
+            "spotify".to_string(),
+            "google-chrome".to_string(),
+        ]
+        .into_iter()
+        .collect();
+
+        assert!(is_any_running_alias("dev.geopjr.Tuba", &running_set));
+        assert!(is_any_running_alias("com.spotify.Client", &running_set));
+        assert!(is_any_running_alias("google-chrome", &running_set));
+        assert!(is_any_running_alias("google_chrome", &running_set));
+        assert!(!is_any_running_alias("firefox", &running_set));
+        assert!(!is_any_running_alias("discord", &running_set));
     }
 
     #[test]
