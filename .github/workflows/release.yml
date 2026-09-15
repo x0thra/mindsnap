@@ -51,7 +51,7 @@ jobs:
             src-tauri/target/release/bundle/appimage/*.AppImage
           tag_name: ${{ github.ref_name }}
           name: 'Mindsnap ${{ github.ref_name }}'
-          body: 'Mindsnap release bundle. Standalone lightweight focus assistant app.'
+          body: 'TBF'
           draft: false
           prerelease: true
           fail_on_unmatched_files: false
