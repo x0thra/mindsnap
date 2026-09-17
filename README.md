@@ -18,7 +18,7 @@
 
 - Mindsnap runs in the background and monitors how long you spend in specific applications. When you stay on a tracked app past your configured threshold, it sends a desktop notification to help you stay aware of your screen time.
 
-All data stays on your machine locally. No accounts, no telemetry and no background network activity.
+- All data stays on your machine locally. No accounts, no telemetry and no background network activity.
 
 > [!NOTE]
 > This software contains code written by artificial intelligence. However, the app owner and the testing team test the app for bugs and other issues in every release, and the code is reviewed after the artificial intelligence makes a change.
